@@ -988,6 +988,57 @@ B2_API float b2MotorJoint_GetMaxSpringTorque( b2JointId jointId );
 /**@}*/
 
 /**
+ * @defgroup character_ground_joint Character Ground Joint
+ * @brief A narrow gameplay joint with a unilateral support limit and tangential motor.
+ * @{
+ */
+
+/// Create a character ground joint.
+/// @see b2CharacterGroundJointDef for details
+B2_API b2JointId b2CreateCharacterGroundJoint( b2WorldId worldId, const b2CharacterGroundJointDef* def );
+
+/// Set world support parameters for a character ground joint.
+B2_API void b2CharacterGroundJoint_SetWorldSupport( b2JointId jointId, b2Vec2 worldAnchorA, b2Vec2 worldNormalA );
+
+/// Set body-local support parameters for a character ground joint.
+B2_API void b2CharacterGroundJoint_SetBodySupport( b2JointId jointId, b2Vec2 localAnchorA, b2Vec2 localNormalA );
+
+/// Set the body-B local anchor.
+B2_API void b2CharacterGroundJoint_SetLocalAnchorB( b2JointId jointId, b2Vec2 localAnchorB );
+
+/// Set the desired support height.
+B2_API void b2CharacterGroundJoint_SetTargetHeight( b2JointId jointId, float targetHeight );
+
+/// Get the desired support height.
+B2_API float b2CharacterGroundJoint_GetTargetHeight( b2JointId jointId );
+
+/// Set the tangential motor speed.
+B2_API void b2CharacterGroundJoint_SetMotorSpeed( b2JointId jointId, float motorSpeed );
+
+/// Get the tangential motor speed.
+B2_API float b2CharacterGroundJoint_GetMotorSpeed( b2JointId jointId );
+
+/// Set the tangential motor force limit.
+B2_API void b2CharacterGroundJoint_SetMaxMotorForce( b2JointId jointId, float maxMotorForce );
+
+/// Get the tangential motor force limit.
+B2_API float b2CharacterGroundJoint_GetMaxMotorForce( b2JointId jointId );
+
+/// Get the current tangential motor force, usually in newtons.
+B2_API float b2CharacterGroundJoint_GetMotorForce( b2JointId jointId );
+
+/// Set the support break distance.
+B2_API void b2CharacterGroundJoint_SetBreakDistance( b2JointId jointId, float breakDistance );
+
+/// Get the support break distance.
+B2_API float b2CharacterGroundJoint_GetBreakDistance( b2JointId jointId );
+
+/// Get the current support mode.
+B2_API b2CharacterGroundSupportKind b2CharacterGroundJoint_GetSupportKind( b2JointId jointId );
+
+/**@}*/
+
+/**
  * @defgroup filter_joint Filter Joint
  * @brief Functions for the filter joint.
  *

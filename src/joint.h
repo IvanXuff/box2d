@@ -92,6 +92,24 @@ typedef struct b2DistanceJoint
 	bool enableMotor;
 } b2DistanceJoint;
 
+typedef struct b2CharacterGroundJoint
+{
+	float normalImpulse;
+	float motorImpulse;
+	float targetHeight;
+	float motorSpeed;
+	float maxMotorForce;
+	float breakDistance;
+
+	int indexA;
+	int indexB;
+	b2Transform frameA;
+	b2Vec2 anchorB;
+	b2Vec2 deltaCenter;
+
+	b2CharacterGroundSupportKind supportKind;
+} b2CharacterGroundJoint;
+
 typedef struct b2MotorJoint
 {
 	b2Vec2 linearVelocity;
@@ -254,6 +272,7 @@ typedef struct b2JointSim
 	union
 	{
 		b2DistanceJoint distanceJoint;
+		b2CharacterGroundJoint characterGroundJoint;
 		b2MotorJoint motorJoint;
 		b2RevoluteJoint revoluteJoint;
 		b2PrismaticJoint prismaticJoint;
@@ -281,12 +300,14 @@ void b2GetJointReaction( b2JointSim* sim, float invTimeStep, float* force, float
 void b2DrawJoint( b2DebugDraw* draw, b2World* world, b2Joint* joint );
 
 b2Vec2 b2GetDistanceJointForce( b2World* world, b2JointSim* base );
+b2Vec2 b2GetCharacterGroundJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetMotorJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetPrismaticJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetRevoluteJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetWeldJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetWheelJointForce( b2World* world, b2JointSim* base );
 
+float b2GetCharacterGroundJointTorque( b2World* world, b2JointSim* base );
 float b2GetMotorJointTorque( b2World* world, b2JointSim* base );
 float b2GetPrismaticJointTorque( b2World* world, b2JointSim* base );
 float b2GetRevoluteJointTorque( b2World* world, b2JointSim* base );
@@ -294,6 +315,7 @@ float b2GetWeldJointTorque( b2World* world, b2JointSim* base );
 float b2GetWheelJointTorque( b2World* world, b2JointSim* base );
 
 void b2PrepareDistanceJoint( b2JointSim* base, b2StepContext* context );
+void b2PrepareCharacterGroundJoint( b2JointSim* base, b2StepContext* context );
 void b2PrepareMotorJoint( b2JointSim* base, b2StepContext* context );
 void b2PreparePrismaticJoint( b2JointSim* base, b2StepContext* context );
 void b2PrepareRevoluteJoint( b2JointSim* base, b2StepContext* context );
@@ -301,6 +323,7 @@ void b2PrepareWeldJoint( b2JointSim* base, b2StepContext* context );
 void b2PrepareWheelJoint( b2JointSim* base, b2StepContext* context );
 
 void b2WarmStartDistanceJoint( b2JointSim* base, b2StepContext* context );
+void b2WarmStartCharacterGroundJoint( b2JointSim* base, b2StepContext* context );
 void b2WarmStartMotorJoint( b2JointSim* base, b2StepContext* context );
 void b2WarmStartPrismaticJoint( b2JointSim* base, b2StepContext* context );
 void b2WarmStartRevoluteJoint( b2JointSim* base, b2StepContext* context );
@@ -308,6 +331,7 @@ void b2WarmStartWeldJoint( b2JointSim* base, b2StepContext* context );
 void b2WarmStartWheelJoint( b2JointSim* base, b2StepContext* context );
 
 void b2SolveDistanceJoint( b2JointSim* base, b2StepContext* context, bool useBias );
+void b2SolveCharacterGroundJoint( b2JointSim* base, b2StepContext* context, bool useBias );
 void b2SolveMotorJoint( b2JointSim* base, b2StepContext* context );
 void b2SolvePrismaticJoint( b2JointSim* base, b2StepContext* context, bool useBias );
 void b2SolveRevoluteJoint( b2JointSim* base, b2StepContext* context, bool useBias );
@@ -315,6 +339,7 @@ void b2SolveWeldJoint( b2JointSim* base, b2StepContext* context, bool useBias );
 void b2SolveWheelJoint( b2JointSim* base, b2StepContext* context, bool useBias );
 
 void b2DrawDistanceJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB );
+void b2DrawCharacterGroundJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );
 void b2DrawPrismaticJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );
 void b2DrawRevoluteJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );
 void b2DrawWeldJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );

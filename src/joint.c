@@ -36,6 +36,21 @@ static b2JointDef b2DefaultJointDef( void )
 	return def;
 }
 
+static b2Transform b2MakeCharacterGroundFrame( b2Vec2 anchor, b2Vec2 normal )
+{
+	b2Vec2 safeNormal = b2IsNormalized( normal ) ? normal : b2Normalize( normal );
+	if ( b2LengthSquared( safeNormal ) < FLT_EPSILON )
+	{
+		safeNormal = (b2Vec2){ 0.0f, -1.0f };
+	}
+
+	b2Vec2 tangent = b2LeftPerp( safeNormal );
+	b2Transform frame = { 0 };
+	frame.p = anchor;
+	frame.q = b2NormalizeRot( b2MakeRot( b2Atan2( tangent.y, tangent.x ) ) );
+	return frame;
+}
+
 b2DistanceJointDef b2DefaultDistanceJointDef( void )
 {
 	b2DistanceJointDef def = { 0 };
@@ -48,12 +63,40 @@ b2DistanceJointDef b2DefaultDistanceJointDef( void )
 	return def;
 }
 
+b2CharacterGroundJointDef b2DefaultCharacterGroundJointDef( void )
+{
+	b2CharacterGroundJointDef def = { 0 };
+	def.base = b2DefaultJointDef();
+	def.supportKind = b2_characterGroundSupportWorld;
+	def.worldNormalA = (b2Vec2){ 0.0f, -1.0f };
+	def.localNormalA = (b2Vec2){ 0.0f, -1.0f };
+	def.breakDistance = 1.0f;
+	def.internalValue = B2_SECRET_COOKIE;
+	return def;
+}
+
 b2MotorJointDef b2DefaultMotorJointDef( void )
 {
 	b2MotorJointDef def = { 0 };
 	def.base = b2DefaultJointDef();
 	def.internalValue = B2_SECRET_COOKIE;
 	return def;
+}
+
+static b2BodyId b2EnsureCharacterGroundAnchorBody( b2World* world )
+{
+	if ( B2_IS_NON_NULL( world->characterGroundAnchorBodyId ) )
+	{
+		return world->characterGroundAnchorBodyId;
+	}
+
+	b2BodyDef bodyDef = b2DefaultBodyDef();
+	bodyDef.type = b2_staticBody;
+	bodyDef.enableSleep = false;
+	bodyDef.isAwake = false;
+	b2WorldId worldId = { (uint16_t)( world->worldId + 1 ), world->generation };
+	world->characterGroundAnchorBodyId = b2CreateBody( worldId, &bodyDef );
+	return world->characterGroundAnchorBodyId;
 }
 
 b2FilterJointDef b2DefaultFilterJointDef( void )
@@ -473,6 +516,48 @@ b2JointId b2CreateFilterJoint( b2WorldId worldId, const b2FilterJointDef* def )
 	return jointId;
 }
 
+b2JointId b2CreateCharacterGroundJoint( b2WorldId worldId, const b2CharacterGroundJointDef* def )
+{
+	B2_CHECK_DEF( def );
+
+	b2World* world = b2GetWorldFromId( worldId );
+
+	B2_ASSERT( world->locked == false );
+	if ( world->locked )
+	{
+		return (b2JointId){ 0 };
+	}
+
+	b2CharacterGroundJointDef adjusted = *def;
+	adjusted.base.localFrameB.q = b2Rot_identity;
+
+	if ( adjusted.supportKind == b2_characterGroundSupportWorld )
+	{
+		adjusted.base.bodyIdA = b2EnsureCharacterGroundAnchorBody( world );
+		adjusted.base.localFrameA = b2MakeCharacterGroundFrame( adjusted.worldAnchorA, adjusted.worldNormalA );
+	}
+	else
+	{
+		B2_ASSERT( B2_IS_NON_NULL( adjusted.base.bodyIdA ) );
+		adjusted.base.localFrameA = b2MakeCharacterGroundFrame( adjusted.localAnchorA, adjusted.localNormalA );
+	}
+
+	adjusted.base.localFrameB.p = adjusted.localAnchorB;
+
+	b2JointPair pair = b2CreateJoint( world, &adjusted.base, b2_characterGroundJoint );
+	b2JointSim* joint = pair.jointSim;
+
+	joint->characterGroundJoint = (b2CharacterGroundJoint){ 0 };
+	joint->characterGroundJoint.targetHeight = adjusted.targetHeight;
+	joint->characterGroundJoint.motorSpeed = adjusted.motorSpeed;
+	joint->characterGroundJoint.maxMotorForce = adjusted.maxMotorForce;
+	joint->characterGroundJoint.breakDistance = adjusted.breakDistance;
+	joint->characterGroundJoint.supportKind = adjusted.supportKind;
+
+	b2JointId jointId = { joint->jointId + 1, world->worldId, pair.joint->generation };
+	return jointId;
+}
+
 b2JointId b2CreatePrismaticJoint( b2WorldId worldId, const b2PrismaticJointDef* def )
 {
 	B2_CHECK_DEF( def );
@@ -797,6 +882,88 @@ b2Transform b2Joint_GetLocalFrameB( b2JointId jointId )
 	return jointSim->localFrameB;
 }
 
+void b2CharacterGroundJoint_SetWorldSupport( b2JointId jointId, b2Vec2 worldAnchorA, b2Vec2 worldNormalA )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->localFrameA = b2MakeCharacterGroundFrame( worldAnchorA, worldNormalA );
+	joint->characterGroundJoint.supportKind = b2_characterGroundSupportWorld;
+}
+
+void b2CharacterGroundJoint_SetBodySupport( b2JointId jointId, b2Vec2 localAnchorA, b2Vec2 localNormalA )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->localFrameA = b2MakeCharacterGroundFrame( localAnchorA, localNormalA );
+	joint->characterGroundJoint.supportKind = b2_characterGroundSupportBody;
+}
+
+void b2CharacterGroundJoint_SetLocalAnchorB( b2JointId jointId, b2Vec2 localAnchorB )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->localFrameB.p = localAnchorB;
+	joint->localFrameB.q = b2Rot_identity;
+}
+
+void b2CharacterGroundJoint_SetTargetHeight( b2JointId jointId, float targetHeight )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.targetHeight = targetHeight;
+}
+
+float b2CharacterGroundJoint_GetTargetHeight( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.targetHeight;
+}
+
+void b2CharacterGroundJoint_SetMotorSpeed( b2JointId jointId, float motorSpeed )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.motorSpeed = motorSpeed;
+}
+
+float b2CharacterGroundJoint_GetMotorSpeed( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.motorSpeed;
+}
+
+void b2CharacterGroundJoint_SetMaxMotorForce( b2JointId jointId, float maxMotorForce )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.maxMotorForce = maxMotorForce;
+}
+
+float b2CharacterGroundJoint_GetMaxMotorForce( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.maxMotorForce;
+}
+
+float b2CharacterGroundJoint_GetMotorForce( b2JointId jointId )
+{
+	b2World* world = b2GetWorld( jointId.world0 );
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return world->inv_h * joint->characterGroundJoint.motorImpulse;
+}
+
+void b2CharacterGroundJoint_SetBreakDistance( b2JointId jointId, float breakDistance )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.breakDistance = breakDistance;
+}
+
+float b2CharacterGroundJoint_GetBreakDistance( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.breakDistance;
+}
+
+b2CharacterGroundSupportKind b2CharacterGroundJoint_GetSupportKind( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.supportKind;
+}
+
 void b2Joint_SetCollideConnected( b2JointId jointId, bool shouldCollide )
 {
 	b2World* world = b2GetWorldLocked( jointId.world0 );
@@ -893,6 +1060,13 @@ void b2GetJointReaction( b2JointSim* sim, float invTimeStep, float* force, float
 		}
 		break;
 
+		case b2_characterGroundJoint:
+		{
+			b2CharacterGroundJoint* joint = &sim->characterGroundJoint;
+			linearImpulse = sqrtf( joint->normalImpulse * joint->normalImpulse + joint->motorImpulse * joint->motorImpulse );
+		}
+		break;
+
 		case b2_motorJoint:
 		{
 			b2MotorJoint* joint = &sim->motorJoint;
@@ -955,6 +1129,9 @@ static b2Vec2 b2GetJointConstraintForce( b2World* world, b2Joint* joint )
 		case b2_distanceJoint:
 			return b2GetDistanceJointForce( world, base );
 
+		case b2_characterGroundJoint:
+			return b2GetCharacterGroundJointForce( world, base );
+
 		case b2_motorJoint:
 			return b2GetMotorJointForce( world, base );
 
@@ -987,6 +1164,9 @@ static float b2GetJointConstraintTorque( b2World* world, b2Joint* joint )
 	{
 		case b2_distanceJoint:
 			return 0.0f;
+
+		case b2_characterGroundJoint:
+			return b2GetCharacterGroundJointTorque( world, base );
 
 		case b2_motorJoint:
 			return b2GetMotorJointTorque( world, base );
@@ -1066,6 +1246,15 @@ float b2Joint_GetLinearSeparation( b2JointId jointId )
 			}
 
 			return b2AbsFloat( length - distanceJoint->length );
+		}
+
+		case b2_characterGroundJoint:
+		{
+			b2CharacterGroundJoint* characterGroundJoint = &base->characterGroundJoint;
+			b2Vec2 tangent = b2RotateVector( xfA.q, (b2Vec2){ 1.0f, 0.0f } );
+			b2Vec2 normal = b2RightPerp( tangent );
+			float height = b2Dot( normal, dp );
+			return b2MaxFloat( characterGroundJoint->targetHeight - height, 0.0f );
 		}
 
 		case b2_motorJoint:
@@ -1157,6 +1346,9 @@ float b2Joint_GetAngularSeparation( b2JointId jointId )
 	switch ( joint->type )
 	{
 		case b2_distanceJoint:
+			return 0.0f;
+
+		case b2_characterGroundJoint:
 			return 0.0f;
 
 		case b2_motorJoint:
@@ -1279,6 +1471,10 @@ void b2PrepareJoint( b2JointSim* joint, b2StepContext* context )
 			b2PrepareDistanceJoint( joint, context );
 			break;
 
+		case b2_characterGroundJoint:
+			b2PrepareCharacterGroundJoint( joint, context );
+			break;
+
 		case b2_motorJoint:
 			b2PrepareMotorJoint( joint, context );
 			break;
@@ -1315,6 +1511,10 @@ void b2WarmStartJoint( b2JointSim* joint, b2StepContext* context )
 			b2WarmStartDistanceJoint( joint, context );
 			break;
 
+		case b2_characterGroundJoint:
+			b2WarmStartCharacterGroundJoint( joint, context );
+			break;
+
 		case b2_motorJoint:
 			b2WarmStartMotorJoint( joint, context );
 			break;
@@ -1349,6 +1549,10 @@ void b2SolveJoint( b2JointSim* joint, b2StepContext* context, bool useBias )
 	{
 		case b2_distanceJoint:
 			b2SolveDistanceJoint( joint, context, useBias );
+			break;
+
+		case b2_characterGroundJoint:
+			b2SolveCharacterGroundJoint( joint, context, useBias );
 			break;
 
 		case b2_motorJoint:
@@ -1454,6 +1658,10 @@ void b2DrawJoint( b2DebugDraw* draw, b2World* world, b2Joint* joint )
 	{
 		case b2_distanceJoint:
 			b2DrawDistanceJoint( draw, jointSim, transformA, transformB );
+			break;
+
+		case b2_characterGroundJoint:
+			b2DrawCharacterGroundJoint( draw, jointSim, transformA, transformB, scale );
 			break;
 
 		case b2_filterJoint:

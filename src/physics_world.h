@@ -97,6 +97,9 @@ typedef struct b2World
 	// This is a dense array of sensor data.
 	b2SensorArray sensors;
 
+	// Shared static anchor used by character ground joints when they bind to world support.
+	b2BodyId characterGroundAnchorBodyId;
+
 	// Per thread storage
 	b2TaskContextArray taskContexts;
 	b2SensorTaskContextArray sensorTaskContexts;

@@ -23,6 +23,7 @@ set(BOX2D_SOURCE_FILES
 	container.h
 	core.c
 	core.h
+	character_ground_joint.c
 	ctz.h
 	distance.c
 	distance_joint.c

@@ -550,6 +550,7 @@ typedef struct b2Counters
 typedef enum b2JointType
 {
 	b2_distanceJoint,
+	b2_characterGroundJoint,
 	b2_filterJoint,
 	b2_motorJoint,
 	b2_prismaticJoint,
@@ -652,6 +653,62 @@ typedef struct b2DistanceJointDef
 /// Use this to initialize your joint definition
 /// @ingroup distance_joint
 B2_API b2DistanceJointDef b2DefaultDistanceJointDef( void );
+
+/// Character ground support kind.
+/// @ingroup character_ground_joint
+typedef enum b2CharacterGroundSupportKind
+{
+	b2_characterGroundSupportWorld = 0,
+	b2_characterGroundSupportBody = 1,
+} b2CharacterGroundSupportKind;
+
+/// A character ground joint is a narrow gameplay joint used to keep a character supported against a surface while
+/// independently driving tangential motor speed.
+/// For world support, set supportKind to b2_characterGroundSupportWorld and leave base.bodyIdA null.
+/// For rigid body support, set supportKind to b2_characterGroundSupportBody and provide base.bodyIdA.
+/// @ingroup character_ground_joint
+typedef struct b2CharacterGroundJointDef
+{
+	/// Base joint definition
+	b2JointDef base;
+
+	/// Whether support comes from the world or body A.
+	b2CharacterGroundSupportKind supportKind;
+
+	/// World-space support anchor used for world support.
+	b2Vec2 worldAnchorA;
+
+	/// World-space support normal used for world support. Must be normalized.
+	b2Vec2 worldNormalA;
+
+	/// Body-A local support anchor used for rigid body support.
+	b2Vec2 localAnchorA;
+
+	/// Body-A local support normal used for rigid body support. Must be normalized.
+	b2Vec2 localNormalA;
+
+	/// Body-B local anchor, usually the character foot point.
+	b2Vec2 localAnchorB;
+
+	/// Desired separation along the support normal.
+	float targetHeight;
+
+	/// Tangential motor target speed in meters per second.
+	float motorSpeed;
+
+	/// Tangential motor force limit in newtons.
+	float maxMotorForce;
+
+	/// Maximum support clearance before the support row stops engaging.
+	float breakDistance;
+
+	/// Used internally to detect a valid definition. DO NOT SET.
+	int internalValue;
+} b2CharacterGroundJointDef;
+
+/// Use this to initialize your joint definition.
+/// @ingroup character_ground_joint
+B2_API b2CharacterGroundJointDef b2DefaultCharacterGroundJointDef( void );
 
 /// A motor joint is used to control the relative velocity and or transform between two bodies.
 /// With a velocity of zero this acts like top-down friction.
