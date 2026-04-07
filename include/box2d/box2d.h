@@ -1027,6 +1027,36 @@ B2_API float b2CharacterGroundJoint_GetMaxMotorForce( b2JointId jointId );
 /// Get the current tangential motor force, usually in newtons.
 B2_API float b2CharacterGroundJoint_GetMotorForce( b2JointId jointId );
 
+/// Enable or disable the tangential hold row.
+B2_API void b2CharacterGroundJoint_EnableTangentHold( b2JointId jointId, bool enable );
+
+/// Returns true when tangential hold is enabled.
+B2_API bool b2CharacterGroundJoint_IsTangentHoldEnabled( b2JointId jointId );
+
+/// Set the tangential hold target offset.
+B2_API void b2CharacterGroundJoint_SetTargetTangentOffset( b2JointId jointId, float targetTangentOffset );
+
+/// Get the tangential hold target offset.
+B2_API float b2CharacterGroundJoint_GetTargetTangentOffset( b2JointId jointId );
+
+/// Set the tangential hold spring frequency.
+B2_API void b2CharacterGroundJoint_SetTangentHoldHertz( b2JointId jointId, float hertz );
+
+/// Get the tangential hold spring frequency.
+B2_API float b2CharacterGroundJoint_GetTangentHoldHertz( b2JointId jointId );
+
+/// Set the tangential hold damping ratio.
+B2_API void b2CharacterGroundJoint_SetTangentHoldDampingRatio( b2JointId jointId, float dampingRatio );
+
+/// Get the tangential hold damping ratio.
+B2_API float b2CharacterGroundJoint_GetTangentHoldDampingRatio( b2JointId jointId );
+
+/// Set the tangential hold force limit.
+B2_API void b2CharacterGroundJoint_SetMaxTangentHoldForce( b2JointId jointId, float maxForce );
+
+/// Get the tangential hold force limit.
+B2_API float b2CharacterGroundJoint_GetMaxTangentHoldForce( b2JointId jointId );
+
 /// Set the support break distance.
 B2_API void b2CharacterGroundJoint_SetBreakDistance( b2JointId jointId, float breakDistance );
 
@@ -1035,6 +1065,48 @@ B2_API float b2CharacterGroundJoint_GetBreakDistance( b2JointId jointId );
 
 /// Get the current support mode.
 B2_API b2CharacterGroundSupportKind b2CharacterGroundJoint_GetSupportKind( b2JointId jointId );
+
+/**@}*/
+
+/**
+ * @defgroup target_point_joint Target Point Joint
+ * @brief A gameplay joint that drives a body-B point toward a world target while reacting on body A.
+ * @{
+ */
+
+/// Create a target point joint.
+/// @see b2TargetPointJointDef for details
+B2_API b2JointId b2CreateTargetPointJoint( b2WorldId worldId, const b2TargetPointJointDef* def );
+
+/// Set the world-space target point.
+B2_API void b2TargetPointJoint_SetTargetPoint( b2JointId jointId, b2Vec2 targetPoint );
+
+/// Get the world-space target point.
+B2_API b2Vec2 b2TargetPointJoint_GetTargetPoint( b2JointId jointId );
+
+/// Set the spring stiffness in Hertz.
+B2_API void b2TargetPointJoint_SetSpringHertz( b2JointId jointId, float hertz );
+
+/// Get the spring stiffness in Hertz.
+B2_API float b2TargetPointJoint_GetSpringHertz( b2JointId jointId );
+
+/// Set the spring damping ratio.
+B2_API void b2TargetPointJoint_SetSpringDampingRatio( b2JointId jointId, float dampingRatio );
+
+/// Get the spring damping ratio.
+B2_API float b2TargetPointJoint_GetSpringDampingRatio( b2JointId jointId );
+
+/// Set the maximum spring force in newtons.
+B2_API void b2TargetPointJoint_SetMaxForce( b2JointId jointId, float maxForce );
+
+/// Get the maximum spring force in newtons.
+B2_API float b2TargetPointJoint_GetMaxForce( b2JointId jointId );
+
+/// Set the break distance.
+B2_API void b2TargetPointJoint_SetBreakDistance( b2JointId jointId, float breakDistance );
+
+/// Get the break distance.
+B2_API float b2TargetPointJoint_GetBreakDistance( b2JointId jointId );
 
 /**@}*/
 

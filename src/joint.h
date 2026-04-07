@@ -96,9 +96,14 @@ typedef struct b2CharacterGroundJoint
 {
 	float normalImpulse;
 	float motorImpulse;
+	float tangentHoldImpulse;
 	float targetHeight;
 	float motorSpeed;
 	float maxMotorForce;
+	float targetTangentOffset;
+	float tangentHoldHertz;
+	float tangentHoldDampingRatio;
+	float maxTangentHoldForce;
 	float breakDistance;
 
 	int indexA;
@@ -106,9 +111,30 @@ typedef struct b2CharacterGroundJoint
 	b2Transform frameA;
 	b2Vec2 anchorB;
 	b2Vec2 deltaCenter;
+	b2Softness tangentHoldSoftness;
 
 	b2CharacterGroundSupportKind supportKind;
+	bool enableTangentHold;
 } b2CharacterGroundJoint;
+
+typedef struct b2TargetPointJoint
+{
+	b2Vec2 impulse;
+	b2Vec2 targetPoint;
+	float hertz;
+	float dampingRatio;
+	float maxForce;
+	float breakDistance;
+
+	int indexA;
+	int indexB;
+	b2Vec2 anchorA;
+	b2Vec2 anchorB;
+	b2Vec2 deltaCenter;
+	b2Vec2 targetDelta;
+	b2Softness springSoftness;
+	b2Mat22 linearMass;
+} b2TargetPointJoint;
 
 typedef struct b2MotorJoint
 {
@@ -273,6 +299,7 @@ typedef struct b2JointSim
 	{
 		b2DistanceJoint distanceJoint;
 		b2CharacterGroundJoint characterGroundJoint;
+		b2TargetPointJoint targetPointJoint;
 		b2MotorJoint motorJoint;
 		b2RevoluteJoint revoluteJoint;
 		b2PrismaticJoint prismaticJoint;
@@ -301,6 +328,7 @@ void b2DrawJoint( b2DebugDraw* draw, b2World* world, b2Joint* joint );
 
 b2Vec2 b2GetDistanceJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetCharacterGroundJointForce( b2World* world, b2JointSim* base );
+b2Vec2 b2GetTargetPointJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetMotorJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetPrismaticJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetRevoluteJointForce( b2World* world, b2JointSim* base );
@@ -308,6 +336,7 @@ b2Vec2 b2GetWeldJointForce( b2World* world, b2JointSim* base );
 b2Vec2 b2GetWheelJointForce( b2World* world, b2JointSim* base );
 
 float b2GetCharacterGroundJointTorque( b2World* world, b2JointSim* base );
+float b2GetTargetPointJointTorque( b2World* world, b2JointSim* base );
 float b2GetMotorJointTorque( b2World* world, b2JointSim* base );
 float b2GetPrismaticJointTorque( b2World* world, b2JointSim* base );
 float b2GetRevoluteJointTorque( b2World* world, b2JointSim* base );
@@ -316,6 +345,7 @@ float b2GetWheelJointTorque( b2World* world, b2JointSim* base );
 
 void b2PrepareDistanceJoint( b2JointSim* base, b2StepContext* context );
 void b2PrepareCharacterGroundJoint( b2JointSim* base, b2StepContext* context );
+void b2PrepareTargetPointJoint( b2JointSim* base, b2StepContext* context );
 void b2PrepareMotorJoint( b2JointSim* base, b2StepContext* context );
 void b2PreparePrismaticJoint( b2JointSim* base, b2StepContext* context );
 void b2PrepareRevoluteJoint( b2JointSim* base, b2StepContext* context );
@@ -324,6 +354,7 @@ void b2PrepareWheelJoint( b2JointSim* base, b2StepContext* context );
 
 void b2WarmStartDistanceJoint( b2JointSim* base, b2StepContext* context );
 void b2WarmStartCharacterGroundJoint( b2JointSim* base, b2StepContext* context );
+void b2WarmStartTargetPointJoint( b2JointSim* base, b2StepContext* context );
 void b2WarmStartMotorJoint( b2JointSim* base, b2StepContext* context );
 void b2WarmStartPrismaticJoint( b2JointSim* base, b2StepContext* context );
 void b2WarmStartRevoluteJoint( b2JointSim* base, b2StepContext* context );
@@ -332,6 +363,7 @@ void b2WarmStartWheelJoint( b2JointSim* base, b2StepContext* context );
 
 void b2SolveDistanceJoint( b2JointSim* base, b2StepContext* context, bool useBias );
 void b2SolveCharacterGroundJoint( b2JointSim* base, b2StepContext* context, bool useBias );
+void b2SolveTargetPointJoint( b2JointSim* base, b2StepContext* context, bool useBias );
 void b2SolveMotorJoint( b2JointSim* base, b2StepContext* context );
 void b2SolvePrismaticJoint( b2JointSim* base, b2StepContext* context, bool useBias );
 void b2SolveRevoluteJoint( b2JointSim* base, b2StepContext* context, bool useBias );
@@ -340,6 +372,7 @@ void b2SolveWheelJoint( b2JointSim* base, b2StepContext* context, bool useBias )
 
 void b2DrawDistanceJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB );
 void b2DrawCharacterGroundJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );
+void b2DrawTargetPointJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );
 void b2DrawPrismaticJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );
 void b2DrawRevoluteJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );
 void b2DrawWeldJoint( b2DebugDraw* draw, b2JointSim* base, b2Transform transformA, b2Transform transformB, float drawScale );

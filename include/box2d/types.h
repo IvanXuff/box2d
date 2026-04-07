@@ -551,6 +551,7 @@ typedef enum b2JointType
 {
 	b2_distanceJoint,
 	b2_characterGroundJoint,
+	b2_targetPointJoint,
 	b2_filterJoint,
 	b2_motorJoint,
 	b2_prismaticJoint,
@@ -699,6 +700,21 @@ typedef struct b2CharacterGroundJointDef
 	/// Tangential motor force limit in newtons.
 	float maxMotorForce;
 
+	/// Enable a soft tangential position hold row.
+	bool enableTangentHold;
+
+	/// Desired tangential offset from support anchor A to anchor B in meters.
+	float targetTangentOffset;
+
+	/// Tangential hold spring frequency in Hertz.
+	float tangentHoldHertz;
+
+	/// Tangential hold damping ratio.
+	float tangentHoldDampingRatio;
+
+	/// Tangential hold force limit in newtons.
+	float maxTangentHoldForce;
+
 	/// Maximum support clearance before the support row stops engaging.
 	float breakDistance;
 
@@ -709,6 +725,37 @@ typedef struct b2CharacterGroundJointDef
 /// Use this to initialize your joint definition.
 /// @ingroup character_ground_joint
 B2_API b2CharacterGroundJointDef b2DefaultCharacterGroundJointDef( void );
+
+/// A target point joint is a narrow gameplay joint that drives a point on body B toward a world-space target while
+/// applying equal and opposite reaction force to body A.
+/// @ingroup target_point_joint
+typedef struct b2TargetPointJointDef
+{
+	/// Base joint definition
+	b2JointDef base;
+
+	/// The world-space target point to follow.
+	b2Vec2 targetPoint;
+
+	/// The spring stiffness Hertz, cycles per second.
+	float hertz;
+
+	/// The spring damping ratio, non-dimensional.
+	float dampingRatio;
+
+	/// Maximum spring force in newtons.
+	float maxForce;
+
+	/// Maximum tracking error before the spring row stops engaging.
+	float breakDistance;
+
+	/// Used internally to detect a valid definition. DO NOT SET.
+	int internalValue;
+} b2TargetPointJointDef;
+
+/// Use this to initialize your joint definition.
+/// @ingroup target_point_joint
+B2_API b2TargetPointJointDef b2DefaultTargetPointJointDef( void );
 
 /// A motor joint is used to control the relative velocity and or transform between two bodies.
 /// With a velocity of zero this acts like top-down friction.

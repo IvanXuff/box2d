@@ -24,6 +24,7 @@ set(BOX2D_SOURCE_FILES
 	core.c
 	core.h
 	character_ground_joint.c
+	target_point_joint.c
 	ctz.h
 	distance.c
 	distance_joint.c

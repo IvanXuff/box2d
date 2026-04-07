@@ -70,7 +70,18 @@ b2CharacterGroundJointDef b2DefaultCharacterGroundJointDef( void )
 	def.supportKind = b2_characterGroundSupportWorld;
 	def.worldNormalA = (b2Vec2){ 0.0f, -1.0f };
 	def.localNormalA = (b2Vec2){ 0.0f, -1.0f };
+	def.tangentHoldHertz = 8.0f;
+	def.tangentHoldDampingRatio = 1.0f;
 	def.breakDistance = 1.0f;
+	def.internalValue = B2_SECRET_COOKIE;
+	return def;
+}
+
+b2TargetPointJointDef b2DefaultTargetPointJointDef( void )
+{
+	b2TargetPointJointDef def = { 0 };
+	def.base = b2DefaultJointDef();
+	def.breakDistance = B2_HUGE;
 	def.internalValue = B2_SECRET_COOKIE;
 	return def;
 }
@@ -551,8 +562,39 @@ b2JointId b2CreateCharacterGroundJoint( b2WorldId worldId, const b2CharacterGrou
 	joint->characterGroundJoint.targetHeight = adjusted.targetHeight;
 	joint->characterGroundJoint.motorSpeed = adjusted.motorSpeed;
 	joint->characterGroundJoint.maxMotorForce = adjusted.maxMotorForce;
+	joint->characterGroundJoint.enableTangentHold = adjusted.enableTangentHold;
+	joint->characterGroundJoint.targetTangentOffset = adjusted.targetTangentOffset;
+	joint->characterGroundJoint.tangentHoldHertz = adjusted.tangentHoldHertz;
+	joint->characterGroundJoint.tangentHoldDampingRatio = adjusted.tangentHoldDampingRatio;
+	joint->characterGroundJoint.maxTangentHoldForce = adjusted.maxTangentHoldForce;
 	joint->characterGroundJoint.breakDistance = adjusted.breakDistance;
 	joint->characterGroundJoint.supportKind = adjusted.supportKind;
+
+	b2JointId jointId = { joint->jointId + 1, world->worldId, pair.joint->generation };
+	return jointId;
+}
+
+b2JointId b2CreateTargetPointJoint( b2WorldId worldId, const b2TargetPointJointDef* def )
+{
+	B2_CHECK_DEF( def );
+
+	b2World* world = b2GetWorldFromId( worldId );
+
+	B2_ASSERT( world->locked == false );
+	if ( world->locked )
+	{
+		return (b2JointId){ 0 };
+	}
+
+	b2JointPair pair = b2CreateJoint( world, &def->base, b2_targetPointJoint );
+	b2JointSim* joint = pair.jointSim;
+
+	joint->targetPointJoint = (b2TargetPointJoint){ 0 };
+	joint->targetPointJoint.targetPoint = def->targetPoint;
+	joint->targetPointJoint.hertz = def->hertz;
+	joint->targetPointJoint.dampingRatio = def->dampingRatio;
+	joint->targetPointJoint.maxForce = def->maxForce;
+	joint->targetPointJoint.breakDistance = def->breakDistance;
 
 	b2JointId jointId = { joint->jointId + 1, world->worldId, pair.joint->generation };
 	return jointId;
@@ -946,6 +988,66 @@ float b2CharacterGroundJoint_GetMotorForce( b2JointId jointId )
 	return world->inv_h * joint->characterGroundJoint.motorImpulse;
 }
 
+void b2CharacterGroundJoint_EnableTangentHold( b2JointId jointId, bool enable )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.enableTangentHold = enable;
+}
+
+bool b2CharacterGroundJoint_IsTangentHoldEnabled( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.enableTangentHold;
+}
+
+void b2CharacterGroundJoint_SetTargetTangentOffset( b2JointId jointId, float targetTangentOffset )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.targetTangentOffset = targetTangentOffset;
+}
+
+float b2CharacterGroundJoint_GetTargetTangentOffset( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.targetTangentOffset;
+}
+
+void b2CharacterGroundJoint_SetTangentHoldHertz( b2JointId jointId, float hertz )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.tangentHoldHertz = b2MaxFloat( 0.0f, hertz );
+}
+
+float b2CharacterGroundJoint_GetTangentHoldHertz( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.tangentHoldHertz;
+}
+
+void b2CharacterGroundJoint_SetTangentHoldDampingRatio( b2JointId jointId, float dampingRatio )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.tangentHoldDampingRatio = dampingRatio;
+}
+
+float b2CharacterGroundJoint_GetTangentHoldDampingRatio( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.tangentHoldDampingRatio;
+}
+
+void b2CharacterGroundJoint_SetMaxTangentHoldForce( b2JointId jointId, float maxForce )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	joint->characterGroundJoint.maxTangentHoldForce = b2MaxFloat( 0.0f, maxForce );
+}
+
+float b2CharacterGroundJoint_GetMaxTangentHoldForce( b2JointId jointId )
+{
+	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
+	return joint->characterGroundJoint.maxTangentHoldForce;
+}
+
 void b2CharacterGroundJoint_SetBreakDistance( b2JointId jointId, float breakDistance )
 {
 	b2JointSim* joint = b2GetJointSimCheckType( jointId, b2_characterGroundJoint );
@@ -1067,6 +1169,13 @@ void b2GetJointReaction( b2JointSim* sim, float invTimeStep, float* force, float
 		}
 		break;
 
+		case b2_targetPointJoint:
+		{
+			b2TargetPointJoint* joint = &sim->targetPointJoint;
+			linearImpulse = b2Length( joint->impulse );
+		}
+		break;
+
 		case b2_motorJoint:
 		{
 			b2MotorJoint* joint = &sim->motorJoint;
@@ -1132,6 +1241,9 @@ static b2Vec2 b2GetJointConstraintForce( b2World* world, b2Joint* joint )
 		case b2_characterGroundJoint:
 			return b2GetCharacterGroundJointForce( world, base );
 
+		case b2_targetPointJoint:
+			return b2GetTargetPointJointForce( world, base );
+
 		case b2_motorJoint:
 			return b2GetMotorJointForce( world, base );
 
@@ -1167,6 +1279,9 @@ static float b2GetJointConstraintTorque( b2World* world, b2Joint* joint )
 
 		case b2_characterGroundJoint:
 			return b2GetCharacterGroundJointTorque( world, base );
+
+		case b2_targetPointJoint:
+			return b2GetTargetPointJointTorque( world, base );
 
 		case b2_motorJoint:
 			return b2GetMotorJointTorque( world, base );
@@ -1255,6 +1370,12 @@ float b2Joint_GetLinearSeparation( b2JointId jointId )
 			b2Vec2 normal = b2RightPerp( tangent );
 			float height = b2Dot( normal, dp );
 			return b2MaxFloat( characterGroundJoint->targetHeight - height, 0.0f );
+		}
+
+		case b2_targetPointJoint:
+		{
+			b2TargetPointJoint* targetPointJoint = &base->targetPointJoint;
+			return b2Length( b2Sub( pB, targetPointJoint->targetPoint ) );
 		}
 
 		case b2_motorJoint:
@@ -1349,6 +1470,9 @@ float b2Joint_GetAngularSeparation( b2JointId jointId )
 			return 0.0f;
 
 		case b2_characterGroundJoint:
+			return 0.0f;
+
+		case b2_targetPointJoint:
 			return 0.0f;
 
 		case b2_motorJoint:
@@ -1475,6 +1599,10 @@ void b2PrepareJoint( b2JointSim* joint, b2StepContext* context )
 			b2PrepareCharacterGroundJoint( joint, context );
 			break;
 
+		case b2_targetPointJoint:
+			b2PrepareTargetPointJoint( joint, context );
+			break;
+
 		case b2_motorJoint:
 			b2PrepareMotorJoint( joint, context );
 			break;
@@ -1515,6 +1643,10 @@ void b2WarmStartJoint( b2JointSim* joint, b2StepContext* context )
 			b2WarmStartCharacterGroundJoint( joint, context );
 			break;
 
+		case b2_targetPointJoint:
+			b2WarmStartTargetPointJoint( joint, context );
+			break;
+
 		case b2_motorJoint:
 			b2WarmStartMotorJoint( joint, context );
 			break;
@@ -1553,6 +1685,10 @@ void b2SolveJoint( b2JointSim* joint, b2StepContext* context, bool useBias )
 
 		case b2_characterGroundJoint:
 			b2SolveCharacterGroundJoint( joint, context, useBias );
+			break;
+
+		case b2_targetPointJoint:
+			b2SolveTargetPointJoint( joint, context, useBias );
 			break;
 
 		case b2_motorJoint:
@@ -1662,6 +1798,10 @@ void b2DrawJoint( b2DebugDraw* draw, b2World* world, b2Joint* joint )
 
 		case b2_characterGroundJoint:
 			b2DrawCharacterGroundJoint( draw, jointSim, transformA, transformB, scale );
+			break;
+
+		case b2_targetPointJoint:
+			b2DrawTargetPointJoint( draw, jointSim, transformA, transformB, scale );
 			break;
 
 		case b2_filterJoint:
