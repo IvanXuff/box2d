@@ -17,6 +17,7 @@ b2AABB b2ComputePixelShapeAABB( const b2PixelShape* shape, b2Transform transform
 b2MassData b2ComputePixelShapeMass( const b2PixelShape* shape, float density );
 b2Vec2 b2GetPixelShapeCentroid( const b2PixelShape* shape );
 float b2GetPixelShapeMaxExtent( const b2PixelShape* shape, b2Vec2 localCenter );
+b2CastOutput b2RayCastPixelShape( const b2PixelShape* shape, const b2RayCastInput* input );
 bool b2PointInPixelShape( const b2PixelShape* shape, b2Vec2 localPoint );
 bool b2IsPixelShapeUsable( const b2PixelShape* shape );
 bool b2IsPixelAssetValid( const b2PixelAsset* asset );

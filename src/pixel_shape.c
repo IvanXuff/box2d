@@ -275,6 +275,189 @@ static bool b2SourceOccupancyCell( const uint64_t* occupancyBits, int32_t occupa
 	return b2SourceOccupancyBit( occupancyBits, occupancyWordCount, y * width + x );
 }
 
+static bool b2ClipPixelRayAxis( float origin, float translation, float lower, float upper, float* lowerFraction,
+								float* upperFraction, b2Vec2* lowerNormal, b2Vec2 axisNormal )
+{
+	if ( b2AbsFloat( translation ) < 1.0e-12f )
+	{
+		return lower <= origin && origin <= upper;
+	}
+
+	float invTranslation = 1.0f / translation;
+	float t1 = ( lower - origin ) * invTranslation;
+	float t2 = ( upper - origin ) * invTranslation;
+	b2Vec2 n1 = axisNormal;
+	if ( t1 > t2 )
+	{
+		float t = t1;
+		t1 = t2;
+		t2 = t;
+		n1 = b2Neg( axisNormal );
+	}
+
+	if ( t1 > *lowerFraction )
+	{
+		*lowerFraction = t1;
+		*lowerNormal = n1;
+	}
+	if ( t2 < *upperFraction )
+	{
+		*upperFraction = t2;
+	}
+
+	return *lowerFraction <= *upperFraction;
+}
+
+b2CastOutput b2RayCastPixelShape( const b2PixelShape* shape, const b2RayCastInput* input )
+{
+	b2CastOutput output = { 0 };
+	const b2PixelAsset* asset = shape == NULL ? NULL : shape->asset;
+	if ( b2IsPixelShapeUsable( shape ) == false || input == NULL || b2IsValidRay( input ) == false )
+	{
+		return output;
+	}
+
+	if ( input->maxFraction <= 0.0f )
+	{
+		if ( b2PointInPixelShape( shape, input->origin ) )
+		{
+			output.point = input->origin;
+			output.hit = true;
+		}
+		return output;
+	}
+
+	const float pixelSize = asset->pixelSize;
+	const float halfWidth = 0.5f * (float)asset->width;
+	const float halfHeight = 0.5f * (float)asset->height;
+	b2Vec2 gridOrigin = {
+		( input->origin.x - shape->localOrigin.x ) / pixelSize + halfWidth,
+		( input->origin.y - shape->localOrigin.y ) / pixelSize + halfHeight,
+	};
+	b2Vec2 gridTranslation = {
+		input->translation.x / pixelSize,
+		input->translation.y / pixelSize,
+	};
+
+	float entryFraction = 0.0f;
+	float exitFraction = input->maxFraction;
+	b2Vec2 entryNormal = b2Vec2_zero;
+	if ( b2ClipPixelRayAxis( gridOrigin.x, gridTranslation.x, 0.0f, (float)asset->width, &entryFraction, &exitFraction,
+							  &entryNormal, (b2Vec2){ -1.0f, 0.0f } ) == false ||
+		 b2ClipPixelRayAxis( gridOrigin.y, gridTranslation.y, 0.0f, (float)asset->height, &entryFraction, &exitFraction,
+							  &entryNormal, (b2Vec2){ 0.0f, -1.0f } ) == false )
+	{
+		return output;
+	}
+
+	if ( exitFraction < 0.0f || entryFraction > input->maxFraction )
+	{
+		return output;
+	}
+
+	float currentFraction = b2MaxFloat( entryFraction, 0.0f );
+	b2Vec2 p = {
+		gridOrigin.x + currentFraction * gridTranslation.x,
+		gridOrigin.y + currentFraction * gridTranslation.y,
+	};
+	int x = (int)floorf( p.x );
+	int y = (int)floorf( p.y );
+	if ( x == asset->width && gridTranslation.x <= 0.0f )
+	{
+		x = asset->width - 1;
+	}
+	if ( y == asset->height && gridTranslation.y <= 0.0f )
+	{
+		y = asset->height - 1;
+	}
+	x = b2ClampInt( x, 0, asset->width - 1 );
+	y = b2ClampInt( y, 0, asset->height - 1 );
+
+	if ( b2PixelAsset_IsOccupied( asset, x, y ) )
+	{
+		output.fraction = currentFraction;
+		output.point = b2MulAdd( input->origin, currentFraction, input->translation );
+		output.normal = currentFraction == 0.0f ? b2Vec2_zero : entryNormal;
+		output.hit = true;
+		return output;
+	}
+
+	const int stepX = gridTranslation.x > 0.0f ? 1 : -1;
+	const int stepY = gridTranslation.y > 0.0f ? 1 : -1;
+	float nextX = FLT_MAX;
+	float nextY = FLT_MAX;
+	float deltaX = FLT_MAX;
+	float deltaY = FLT_MAX;
+	if ( b2AbsFloat( gridTranslation.x ) >= 1.0e-12f )
+	{
+		float boundaryX = gridTranslation.x > 0.0f ? (float)( x + 1 ) : (float)x;
+		nextX = ( boundaryX - gridOrigin.x ) / gridTranslation.x;
+		deltaX = 1.0f / b2AbsFloat( gridTranslation.x );
+		if ( nextX < currentFraction )
+		{
+			nextX = currentFraction;
+		}
+	}
+	if ( b2AbsFloat( gridTranslation.y ) >= 1.0e-12f )
+	{
+		float boundaryY = gridTranslation.y > 0.0f ? (float)( y + 1 ) : (float)y;
+		nextY = ( boundaryY - gridOrigin.y ) / gridTranslation.y;
+		deltaY = 1.0f / b2AbsFloat( gridTranslation.y );
+		if ( nextY < currentFraction )
+		{
+			nextY = currentFraction;
+		}
+	}
+
+	const float maxFraction = b2MinFloat( exitFraction, input->maxFraction );
+	while ( true )
+	{
+		b2Vec2 normal = b2Vec2_zero;
+		if ( nextX < nextY )
+		{
+			currentFraction = nextX;
+			nextX += deltaX;
+			x += stepX;
+			normal = (b2Vec2){ (float)-stepX, 0.0f };
+		}
+		else if ( nextY < nextX )
+		{
+			currentFraction = nextY;
+			nextY += deltaY;
+			y += stepY;
+			normal = (b2Vec2){ 0.0f, (float)-stepY };
+		}
+		else
+		{
+			currentFraction = nextX;
+			nextX += deltaX;
+			nextY += deltaY;
+			x += stepX;
+			y += stepY;
+			normal = b2Normalize( (b2Vec2){ (float)-stepX, (float)-stepY } );
+		}
+
+		if ( currentFraction > maxFraction )
+		{
+			break;
+		}
+		if ( x < 0 || x >= asset->width || y < 0 || y >= asset->height )
+		{
+			break;
+		}
+		if ( b2PixelAsset_IsOccupied( asset, x, y ) )
+		{
+			output.fraction = currentFraction;
+			output.point = b2MulAdd( input->origin, currentFraction, input->translation );
+			output.normal = normal;
+			output.hit = true;
+			return output;
+		}
+	}
+
+	return output;
+}
+
 static uint8_t b2ClassifyPixelFeature( const uint64_t* occupancyBits, int32_t occupancyWordCount, int32_t width, int32_t height,
 									   int32_t x, int32_t y, int32_t minX, int32_t minY, int32_t maxX, int32_t maxY,
 									   int32_t supportCornerInterval )

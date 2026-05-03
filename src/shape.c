@@ -949,7 +949,8 @@ b2CastOutput b2RayCastShape( const b2RayCastInput* input, const b2Shape* shape, 
 			output = b2RayCastSegment( &shape->chainSegment.segment, &localInput, true );
 			break;
 		case b2_pixelShape:
-			return output;
+			output = b2RayCastPixelShape( &shape->pixel, &localInput );
+			break;
 		default:
 			return output;
 	}
@@ -1211,7 +1212,8 @@ b2CastOutput b2Shape_RayCast( b2ShapeId shapeId, const b2RayCastInput* input )
 			break;
 
 		case b2_pixelShape:
-			return output;
+			output = b2RayCastPixelShape( &shape->pixel, &localInput );
+			break;
 
 		default:
 			B2_ASSERT( false );
