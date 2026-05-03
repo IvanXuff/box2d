@@ -1551,6 +1551,56 @@ b2PixelShape b2Shape_GetPixelShape( b2ShapeId shapeId )
 	return shape->pixel;
 }
 
+bool b2Shape_SetPixelShape( b2ShapeId shapeId, const b2PixelShape* pixel, bool updateBodyMass )
+{
+	if ( b2IsPixelShapeValid( pixel ) == false )
+	{
+		return false;
+	}
+
+	b2World* world = b2GetWorldLocked( shapeId.world0 );
+	if ( world == NULL )
+	{
+		return false;
+	}
+
+	b2Shape* shape = b2GetShape( world, shapeId );
+	if ( shape->type != b2_pixelShape )
+	{
+		return false;
+	}
+
+	shape->pixel = *pixel;
+	if ( shape->pixel.diskRadius == 0.0f )
+	{
+		shape->pixel.diskRadius = b2_defaultPixelDiskRadius;
+	}
+	if ( shape->pixel.topologyVersion == 0 )
+	{
+		shape->pixel.topologyVersion = shape->pixel.asset->topologyVersion;
+	}
+	shape->localCentroid = b2GetShapeCentroid( shape );
+	shape->aabbMargin = b2ComputeShapeMargin( shape );
+
+	bool wakeBodies = true;
+	bool destroyProxy = true;
+	b2ResetProxy( world, shape, wakeBodies, destroyProxy );
+
+	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
+	if ( updateBodyMass )
+	{
+		b2UpdateBodyMassData( world, body );
+	}
+	else
+	{
+		body->flags |= b2_dirtyMass;
+	}
+	b2WakeBody( world, body );
+
+	b2ValidateSolverSets( world );
+	return true;
+}
+
 void b2Shape_SetCircle( b2ShapeId shapeId, const b2Circle* circle )
 {
 	b2World* world = b2GetWorldLocked( shapeId.world0 );

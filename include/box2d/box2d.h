@@ -649,6 +649,12 @@ B2_API b2Polygon b2Shape_GetPolygon( b2ShapeId shapeId );
 /// Get a copy of the shape's pixel geometry. Asserts the type is correct.
 B2_API b2PixelShape b2Shape_GetPixelShape( b2ShapeId shapeId );
 
+/// Allows you to update the current pixel shape.
+/// This returns false if the shape is not a pixel shape, the input is invalid, or the world is locked.
+/// This modifies the mass properties only when updateBodyMass is true.
+/// @see b2Body_ApplyMassFromShapes
+B2_API bool b2Shape_SetPixelShape( b2ShapeId shapeId, const b2PixelShape* pixel, bool updateBodyMass );
+
 /// Allows you to change a shape to be a circle or update the current circle.
 /// This does not modify the mass properties.
 /// @see b2Body_ApplyMassFromShapes
