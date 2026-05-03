@@ -112,7 +112,10 @@ static inline float b2GetShapeRadius( const b2Shape* shape )
 		case b2_polygonShape:
 			return shape->polygon.radius;
 		case b2_pixelShape:
-			return shape->pixel.asset == NULL ? 0.0f : shape->pixel.diskRadius * shape->pixel.asset->pixelSize;
+		{
+			float diskRadius = shape->pixel.diskRadius == 0.0f ? b2_defaultPixelDiskRadius : shape->pixel.diskRadius;
+			return shape->pixel.asset == NULL || diskRadius < 0.0f ? 0.0f : diskRadius * shape->pixel.asset->pixelSize;
+		}
 		default:
 			return 0.0f;
 	}

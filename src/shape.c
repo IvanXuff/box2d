@@ -159,7 +159,7 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 			shape->pixel = *(const b2PixelShape*)geometry;
 			if ( shape->pixel.asset != NULL && shape->pixel.diskRadius <= 0.0f )
 			{
-				shape->pixel.diskRadius = 0.62f;
+				shape->pixel.diskRadius = b2_defaultPixelDiskRadius;
 			}
 			if ( shape->pixel.asset != NULL && shape->pixel.topologyVersion == 0 )
 			{
@@ -290,7 +290,7 @@ b2ShapeId b2CreatePolygonShape( b2BodyId bodyId, const b2ShapeDef* def, const b2
 
 b2ShapeId b2CreatePixelShape( b2BodyId bodyId, const b2ShapeDef* def, const b2PixelShape* pixel )
 {
-	if ( b2IsPixelShapeUsable( pixel ) == false || b2IsPixelAssetValid( pixel->asset ) == false )
+	if ( b2IsPixelShapeValid( pixel ) == false )
 	{
 		return b2_nullShapeId;
 	}
@@ -815,7 +815,8 @@ float b2GetShapeProjectedPerimeter( const b2Shape* shape, b2Vec2 line )
 				lower = b2MinFloat( lower, value );
 				upper = b2MaxFloat( upper, value );
 			}
-			return upper - lower + 2.0f * shape->pixel.diskRadius * shape->pixel.asset->pixelSize;
+			return upper - lower + 2.0f * b2MaxFloat( b2GetPixelShapeDiskRadius( &shape->pixel ), 0.0f ) *
+									   shape->pixel.asset->pixelSize;
 		}
 
 		default:
@@ -905,7 +906,8 @@ b2ShapeExtent b2ComputeShapeExtent( const b2Shape* shape, b2Vec2 localCenter )
 
 		case b2_pixelShape:
 		{
-			float radius = shape->pixel.asset == NULL ? 0.0f : shape->pixel.diskRadius * shape->pixel.asset->pixelSize;
+			float radius =
+				shape->pixel.asset == NULL ? 0.0f : b2MaxFloat( b2GetPixelShapeDiskRadius( &shape->pixel ), 0.0f ) * shape->pixel.asset->pixelSize;
 			extent.minExtent = radius;
 			extent.maxExtent = b2GetPixelShapeMaxExtent( &shape->pixel, localCenter );
 		}
@@ -942,6 +944,8 @@ b2CastOutput b2RayCastShape( const b2RayCastInput* input, const b2Shape* shape, 
 		case b2_chainSegmentShape:
 			output = b2RayCastSegment( &shape->chainSegment.segment, &localInput, true );
 			break;
+		case b2_pixelShape:
+			return output;
 		default:
 			return output;
 	}
@@ -1006,6 +1010,8 @@ b2CastOutput b2ShapeCastShape( const b2ShapeCastInput* input, const b2Shape* sha
 			output = b2ShapeCastSegment( &shape->chainSegment.segment, &localInput );
 		}
 		break;
+		case b2_pixelShape:
+			return output;
 		default:
 			return output;
 	}
@@ -1088,6 +1094,11 @@ b2ShapeProxy b2MakeShapeDistanceProxy( const b2Shape* shape )
 			return b2MakeProxy( &shape->segment.point1, 2, 0.0f );
 		case b2_chainSegmentShape:
 			return b2MakeProxy( &shape->chainSegment.segment.point1, 2, 0.0f );
+		case b2_pixelShape:
+		{
+			b2ShapeProxy empty = { 0 };
+			return empty;
+		}
 		default:
 		{
 			B2_ASSERT( false );
@@ -1194,6 +1205,9 @@ b2CastOutput b2Shape_RayCast( b2ShapeId shapeId, const b2RayCastInput* input )
 		case b2_chainSegmentShape:
 			output = b2RayCastSegment( &shape->chainSegment.segment, &localInput, true );
 			break;
+
+		case b2_pixelShape:
+			return output;
 
 		default:
 			B2_ASSERT( false );
@@ -1837,6 +1851,11 @@ b2Vec2 b2Shape_GetClosestPoint( b2ShapeId shapeId, b2Vec2 target )
 	b2Shape* shape = b2GetShape( world, shapeId );
 	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
 	b2Transform transform = b2GetBodyTransformQuick( world, body );
+
+	if ( shape->type == b2_pixelShape )
+	{
+		return b2GetPixelShapeClosestPoint( &shape->pixel, transform, target );
+	}
 
 	b2DistanceInput input;
 	input.proxyA = b2MakeShapeDistanceProxy( shape );

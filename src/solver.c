@@ -395,6 +395,11 @@ static bool b2ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
 	}
 #endif
 
+	if ( shape->type == b2_pixelShape || fastShape->type == b2_pixelShape )
+	{
+		return true;
+	}
+
 	b2TOIInput input;
 	input.proxyA = b2MakeShapeDistanceProxy( shape );
 	input.proxyB = b2MakeShapeDistanceProxy( fastShape );

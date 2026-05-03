@@ -39,7 +39,38 @@ typedef struct b2PixelRawBuffer
 	int chunkPairs;
 	int cellVisits;
 	int diskTests;
+	int rawContactAttempts;
+	bool chunkPairTestsCapped;
+	bool chunkPairsCapped;
+	bool cellVisitsCapped;
+	bool diskTestsCapped;
+	bool rawContactsCapped;
 } b2PixelRawBuffer;
+
+static void b2PublishPixelStats( const b2PixelRawBuffer* buffer, const b2Manifold* manifold, bool rescueCandidate, bool rescueUsed,
+								 bool invalidInput, b2PixelNarrowphaseStats* stats )
+{
+	if ( stats == NULL )
+	{
+		return;
+	}
+
+	stats->chunkPairTests = buffer == NULL ? 0 : buffer->chunkPairTests;
+	stats->chunkPairs = buffer == NULL ? 0 : buffer->chunkPairs;
+	stats->cellVisits = buffer == NULL ? 0 : buffer->cellVisits;
+	stats->diskTests = buffer == NULL ? 0 : buffer->diskTests;
+	stats->rawContacts = buffer == NULL ? 0 : buffer->count;
+	stats->rawContactAttempts = buffer == NULL ? 0 : buffer->rawContactAttempts;
+	stats->manifoldPoints = manifold == NULL ? 0 : manifold->pointCount;
+	stats->chunkPairTestsCapped = buffer != NULL && buffer->chunkPairTestsCapped;
+	stats->chunkPairsCapped = buffer != NULL && buffer->chunkPairsCapped;
+	stats->cellVisitsCapped = buffer != NULL && buffer->cellVisitsCapped;
+	stats->diskTestsCapped = buffer != NULL && buffer->diskTestsCapped;
+	stats->rawContactsCapped = buffer != NULL && buffer->rawContactsCapped;
+	stats->rescueCandidate = rescueCandidate;
+	stats->rescueUsed = rescueUsed;
+	stats->invalidInput = invalidInput;
+}
 
 static b2AABB b2TransformPixelLocalAABB( b2AABB local, b2Transform xf, b2Vec2 origin, float inflate )
 {
@@ -81,6 +112,12 @@ static uint16_t b2MakePixelContactId( uint16_t featureIdA, uint16_t featureIdB )
 
 static void b2PushPixelRawContact( b2PixelRawBuffer* buffer, b2PixelRawContact contact )
 {
+	buffer->rawContactAttempts += 1;
+	if ( buffer->rawContactAttempts > b2_maxPixelRawContacts )
+	{
+		buffer->rawContactsCapped = true;
+	}
+
 	for ( int i = 0; i < buffer->count; ++i )
 	{
 		b2PixelRawContact* existing = buffer->contacts + i;
@@ -100,6 +137,7 @@ static void b2PushPixelRawContact( b2PixelRawBuffer* buffer, b2PixelRawContact c
 		return;
 	}
 
+	buffer->rawContactsCapped = true;
 	int shallowest = 0;
 	for ( int i = 1; i < buffer->count; ++i )
 	{
@@ -126,8 +164,8 @@ static bool b2DiskTestPixelFeatures( const b2PixelShape* shapeA, b2Transform xfA
 	b2Vec2 worldA = b2TransformPoint( xfA, localA );
 	b2Vec2 worldB = b2TransformPoint( xfB, localB );
 	b2Vec2 d = b2Sub( worldB, worldA );
-	float radiusA = shapeA->diskRadius * assetA->pixelSize;
-	float radiusB = shapeB->diskRadius * assetB->pixelSize;
+	float radiusA = b2GetPixelShapeDiskRadius( shapeA ) * assetA->pixelSize;
+	float radiusB = b2GetPixelShapeDiskRadius( shapeB ) * assetB->pixelSize;
 	float radius = radiusA + radiusB;
 	float distanceSqr = b2LengthSquared( d );
 	if ( distanceSqr > radius * radius )
@@ -172,8 +210,8 @@ static void b2GatherPixelCornerContacts( const b2PixelShape* source, b2Transform
 {
 	const b2PixelAsset* assetSource = source->asset;
 	const b2PixelAsset* assetTarget = target->asset;
-	float radiusSource = source->diskRadius * assetSource->pixelSize;
-	float radiusTarget = target->diskRadius * assetTarget->pixelSize;
+	float radiusSource = b2GetPixelShapeDiskRadius( source ) * assetSource->pixelSize;
+	float radiusTarget = b2GetPixelShapeDiskRadius( target ) * assetTarget->pixelSize;
 	float searchRadius = radiusSource + radiusTarget;
 	int searchCells = (int)ceilf( searchRadius / assetTarget->pixelSize ) + 1;
 	b2Vec2 fallbackNormal = b2Normalize( b2Sub( b2PixelShape_GetWorldCenter( target, xfTarget ),
@@ -193,6 +231,7 @@ static void b2GatherPixelCornerContacts( const b2PixelShape* source, b2Transform
 		{
 			if ( buffer->chunkPairTests >= b2_maxPixelChunkPairTests )
 			{
+				buffer->chunkPairTestsCapped = true;
 				return;
 			}
 
@@ -207,6 +246,7 @@ static void b2GatherPixelCornerContacts( const b2PixelShape* source, b2Transform
 
 			if ( buffer->chunkPairs >= b2_maxPixelChunkPairs )
 			{
+				buffer->chunkPairsCapped = true;
 				return;
 			}
 
@@ -235,12 +275,14 @@ static void b2GatherPixelCornerContacts( const b2PixelShape* source, b2Transform
 					{
 						if ( buffer->cellVisits >= b2_maxPixelCellVisits )
 						{
+							buffer->cellVisitsCapped = true;
 							return;
 						}
 
 						buffer->cellVisits += 1;
 						if ( buffer->diskTests >= b2_maxPixelDiskTests )
 						{
+							buffer->diskTestsCapped = true;
 							return;
 						}
 
@@ -270,6 +312,13 @@ static void b2GatherPixelCornerContacts( const b2PixelShape* source, b2Transform
 			}
 		}
 	}
+}
+
+static bool b2HasPixelRescueCandidate( const b2AABB* aabbA, const b2AABB* aabbB, const b2PixelRawBuffer* buffer )
+{
+	return buffer != NULL && buffer->count == 0 && b2AABB_Overlaps( *aabbA, *aabbB ) &&
+		   ( buffer->chunkPairTestsCapped || buffer->chunkPairsCapped || buffer->cellVisitsCapped || buffer->diskTestsCapped ||
+			 buffer->rawContactsCapped );
 }
 
 static int b2PickPixelPrimary( const b2PixelRawBuffer* buffer )
@@ -347,11 +396,13 @@ static void b2FillPixelManifoldPoint( b2ManifoldPoint* mp, const b2PixelRawConta
 	mp->id = b2MakePixelContactId( contact->featureIdA, contact->featureIdB );
 }
 
-b2Manifold b2CollidePixelShapes( const b2PixelShape* pixelA, b2Transform xfA, const b2PixelShape* pixelB, b2Transform xfB )
+b2Manifold b2CollidePixelShapesWithStats( const b2PixelShape* pixelA, b2Transform xfA, const b2PixelShape* pixelB,
+										  b2Transform xfB, b2PixelNarrowphaseStats* stats )
 {
 	b2Manifold manifold = { 0 };
 	if ( b2IsPixelShapeUsable( pixelA ) == false || b2IsPixelShapeUsable( pixelB ) == false )
 	{
+		b2PublishPixelStats( NULL, &manifold, false, false, true, stats );
 		return manifold;
 	}
 
@@ -359,6 +410,7 @@ b2Manifold b2CollidePixelShapes( const b2PixelShape* pixelA, b2Transform xfA, co
 	b2AABB aabbB = b2ComputePixelShapeAABB( pixelB, xfB );
 	if ( b2AABB_Overlaps( aabbA, aabbB ) == false )
 	{
+		b2PublishPixelStats( NULL, &manifold, false, false, false, stats );
 		return manifold;
 	}
 
@@ -367,6 +419,8 @@ b2Manifold b2CollidePixelShapes( const b2PixelShape* pixelA, b2Transform xfA, co
 	b2GatherPixelCornerContacts( pixelB, xfB, pixelA, xfA, true, &buffer );
 	if ( buffer.count == 0 )
 	{
+		bool rescueCandidate = b2HasPixelRescueCandidate( &aabbA, &aabbB, &buffer );
+		b2PublishPixelStats( &buffer, &manifold, rescueCandidate, false, false, stats );
 		return manifold;
 	}
 
@@ -394,7 +448,13 @@ b2Manifold b2CollidePixelShapes( const b2PixelShape* pixelA, b2Transform xfA, co
 		}
 	}
 
+	b2PublishPixelStats( &buffer, &manifold, false, false, false, stats );
 	return manifold;
+}
+
+b2Manifold b2CollidePixelShapes( const b2PixelShape* pixelA, b2Transform xfA, const b2PixelShape* pixelB, b2Transform xfB )
+{
+	return b2CollidePixelShapesWithStats( pixelA, xfA, pixelB, xfB, NULL );
 }
 
 b2Manifold b2PixelShapeManifold( const b2Shape* shapeA, b2Transform xfA, const b2Shape* shapeB, b2Transform xfB )

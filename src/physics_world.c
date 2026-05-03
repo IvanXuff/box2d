@@ -1986,6 +1986,11 @@ static bool TreeOverlapCallback( int proxyId, uint64_t userData, void* context )
 	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
 	b2Transform transform = b2GetBodyTransformQuick( world, body );
 
+	if ( shape->type == b2_pixelShape || worldContext->proxy->count == 0 )
+	{
+		return true;
+	}
+
 	b2DistanceInput input;
 	input.proxyA = *worldContext->proxy;
 	input.proxyB = b2MakeShapeDistanceProxy( shape );
@@ -2015,6 +2020,11 @@ b2TreeStats b2World_OverlapShape( b2WorldId worldId, const b2ShapeProxy* proxy, 
 	b2World* world = b2GetWorldFromId( worldId );
 	B2_ASSERT( world->locked == false );
 	if ( world->locked )
+	{
+		return treeStats;
+	}
+
+	if ( proxy == NULL || proxy->count == 0 )
 	{
 		return treeStats;
 	}
@@ -2513,6 +2523,11 @@ static bool ExplosionCallback( int proxyId, uint64_t userData, void* context )
 
 	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
 	B2_ASSERT( body->type == b2_dynamicBody );
+
+	if ( shape->type == b2_pixelShape )
+	{
+		return true;
+	}
 
 	b2Transform transform = b2GetBodyTransformQuick( world, body );
 

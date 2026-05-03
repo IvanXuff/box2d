@@ -20,6 +20,9 @@ float b2GetPixelShapeMaxExtent( const b2PixelShape* shape, b2Vec2 localCenter );
 bool b2PointInPixelShape( const b2PixelShape* shape, b2Vec2 localPoint );
 bool b2IsPixelShapeUsable( const b2PixelShape* shape );
 bool b2IsPixelAssetValid( const b2PixelAsset* asset );
+bool b2IsPixelShapeValid( const b2PixelShape* shape );
+float b2GetPixelShapeDiskRadius( const b2PixelShape* shape );
+b2Vec2 b2GetPixelShapeClosestPoint( const b2PixelShape* shape, b2Transform transform, b2Vec2 target );
 
 bool b2PixelShape_GetLocalInfo( const b2PixelShape* shape, b2Vec2 localPoint, b2PixelLocalInfo* info );
 bool b2PixelAsset_IsOccupied( const b2PixelAsset* asset, int x, int y );

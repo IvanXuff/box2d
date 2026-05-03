@@ -524,7 +524,13 @@ typedef struct b2PixelChunk
 	b2AABB localAABB;
 } b2PixelChunk;
 
+/// Default pixel disk radius in pixel-size units. A b2PixelShape::diskRadius value of 0 selects this default.
+/// @ingroup shape
+#define b2_defaultPixelDiskRadius 0.62f
+
 /// Caller-owned immutable pixel collision asset view. Box2D does not copy or free these tables.
+/// The feature tables are grouped by canonical asset-grid chunks ordered by (y, x). Within each chunk range, feature ids
+/// are strictly increasing. The asset must contain at least one corner feature for PixelShape-PixelShape contact.
 /// @ingroup shape
 typedef struct b2PixelAsset
 {
@@ -549,6 +555,7 @@ typedef struct b2PixelAsset
 } b2PixelAsset;
 
 /// Pixel shape geometry. The asset is a caller-owned immutable view and must outlive the shape.
+/// diskRadius is measured in pixel-size units; 0 selects b2_defaultPixelDiskRadius and negative values are invalid.
 /// @ingroup shape
 typedef struct b2PixelShape
 {
@@ -557,6 +564,89 @@ typedef struct b2PixelShape
 	float diskRadius;
 	uint32_t topologyVersion;
 } b2PixelShape;
+
+/// Configuration for building a canonical b2PixelAsset from occupancy bits.
+/// @ingroup shape
+typedef struct b2PixelAssetBuildConfig
+{
+	int32_t width;
+	int32_t height;
+	float pixelSize;
+	int32_t chunkSize;
+	int32_t supportCornerInterval;
+	uint32_t topologyVersion;
+} b2PixelAssetBuildConfig;
+
+/// Caller-owned output buffers for b2BuildPixelAssetFromOccupancy.
+/// @ingroup shape
+typedef struct b2PixelAssetBuildBuffers
+{
+	uint64_t* occupancyBits;
+	int32_t occupancyWordCapacity;
+	uint8_t* featureTypes;
+	int32_t featureTypeCapacity;
+	uint8_t* normalIndices;
+	int32_t normalIndexCapacity;
+	b2PixelFeatureRef* corners;
+	int32_t cornerCapacity;
+	b2PixelFeatureRef* edges;
+	int32_t edgeCapacity;
+	b2PixelChunk* chunks;
+	int32_t chunkCapacity;
+} b2PixelAssetBuildBuffers;
+
+/// Result from b2BuildPixelAssetFromOccupancy. If success is false, required* fields report the needed capacities.
+/// The returned asset is a view of the caller-provided buffers and becomes invalid if those buffers move or die.
+/// @ingroup shape
+typedef struct b2PixelAssetBuildResult
+{
+	b2PixelAsset asset;
+	int32_t requiredOccupancyWords;
+	int32_t requiredFeatureTypes;
+	int32_t requiredNormalIndices;
+	int32_t requiredCorners;
+	int32_t requiredEdges;
+	int32_t requiredChunks;
+	bool success;
+	bool overflow;
+	bool invalidInput;
+} b2PixelAssetBuildResult;
+
+/// Low-cost aggregate stats for the PixelShape-PixelShape narrowphase.
+/// @ingroup shape
+typedef struct b2PixelNarrowphaseStats
+{
+	int32_t chunkPairTests;
+	int32_t chunkPairs;
+	int32_t cellVisits;
+	int32_t diskTests;
+	int32_t rawContacts;
+	int32_t rawContactAttempts;
+	int32_t manifoldPoints;
+	bool chunkPairTestsCapped;
+	bool chunkPairsCapped;
+	bool cellVisitsCapped;
+	bool diskTestsCapped;
+	bool rawContactsCapped;
+	bool rescueCandidate;
+	bool rescueUsed;
+	bool invalidInput;
+} b2PixelNarrowphaseStats;
+
+/// Default PixelAsset builder configuration. Fill width, height, and optionally pixelSize before building.
+/// @ingroup shape
+B2_API b2PixelAssetBuildConfig b2DefaultPixelAssetBuildConfig( void );
+
+/// Build a canonical, caller-owned b2PixelAsset view from source occupancy bits. This function does not allocate.
+/// @ingroup shape
+B2_API b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildConfig* config,
+															  const uint64_t* sourceOccupancyBits,
+															  int32_t sourceOccupancyWordCount,
+															  const b2PixelAssetBuildBuffers* buffers );
+
+/// Validate that a b2PixelAsset obeys the public PixelShape contract required by create and collide.
+/// @ingroup shape
+B2_API bool b2ValidatePixelAsset( const b2PixelAsset* asset );
 
 /// Compute the upper bound on time before two shapes penetrate. Time is represented as
 /// a fraction between [0,tMax]. This uses a swept separating axis and may miss some intermediate,
@@ -675,6 +765,10 @@ B2_API b2Manifold b2CollidePolygons( const b2Polygon* polygonA, b2Transform xfA,
 /// Compute the contact manifold between two pixel shapes
 B2_API b2Manifold b2CollidePixelShapes( const b2PixelShape* pixelA, b2Transform xfA, const b2PixelShape* pixelB,
 										b2Transform xfB );
+
+/// Compute the contact manifold between two pixel shapes and return aggregate narrowphase stats.
+B2_API b2Manifold b2CollidePixelShapesWithStats( const b2PixelShape* pixelA, b2Transform xfA, const b2PixelShape* pixelB,
+												 b2Transform xfB, b2PixelNarrowphaseStats* stats );
 
 /// Compute the contact manifold between an segment and a polygon
 B2_API b2Manifold b2CollideSegmentAndPolygon( const b2Segment* segmentA, b2Transform xfA, const b2Polygon* polygonB,
