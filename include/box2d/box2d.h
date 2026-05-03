@@ -373,7 +373,7 @@ B2_API b2Vec2 b2Body_GetWorldCenterOfMass( b2BodyId bodyId );
 
 /// Override the body's mass properties. Normally this is computed automatically using the
 /// shape geometry and density. This information is lost if a shape is added or removed or if the
-/// body type changes.
+/// body type changes. This also resolves any deferred shape mass computation.
 B2_API void b2Body_SetMassData( b2BodyId bodyId, b2MassData massData );
 
 /// Get the mass data for a body
@@ -382,7 +382,8 @@ B2_API b2MassData b2Body_GetMassData( b2BodyId bodyId );
 /// This updates the mass properties to the sum of the mass properties of the shapes.
 /// This normally does not need to be called unless you called SetMassData to override
 /// the mass and you later want to reset the mass.
-/// You may also use this when automatic mass computation has been disabled.
+/// You may also use this when automatic mass computation has been deferred. Alternatively,
+/// you may call b2Body_SetMassData to provide manual mass properties.
 /// You should call this regardless of body type.
 /// Note that sensor shapes may have mass.
 B2_API void b2Body_ApplyMassFromShapes( b2BodyId bodyId );
@@ -526,7 +527,8 @@ B2_API b2ShapeId b2CreatePixelShape( b2BodyId bodyId, const b2ShapeDef* def, con
 
 /// Destroy a shape. You may defer the body mass update which can improve performance if several shapes on a
 ///	body are destroyed at once.
-///	@see b2Body_ApplyMassFromShapes
+/// Deferred mass must be resolved by b2Body_ApplyMassFromShapes or b2Body_SetMassData before stepping.
+///	@see b2Body_ApplyMassFromShapes, b2Body_SetMassData
 B2_API void b2DestroyShape( b2ShapeId shapeId, bool updateBodyMass );
 
 /// Shape identifier validation. Provides validation for up to 64K allocations.
@@ -554,8 +556,9 @@ B2_API void b2Shape_SetUserData( b2ShapeId shapeId, void* userData );
 B2_API void* b2Shape_GetUserData( b2ShapeId shapeId );
 
 /// Set the mass density of a shape, usually in kg/m^2.
-/// This will optionally update the mass properties on the parent body.
-/// @see b2ShapeDef::density, b2Body_ApplyMassFromShapes
+/// This will optionally update the mass properties on the parent body. Deferred mass must be
+/// resolved by b2Body_ApplyMassFromShapes or b2Body_SetMassData before stepping.
+/// @see b2ShapeDef::density, b2Body_ApplyMassFromShapes, b2Body_SetMassData
 B2_API void b2Shape_SetDensity( b2ShapeId shapeId, float density, bool updateBodyMass );
 
 /// Get the density of a shape, usually in kg/m^2
@@ -652,7 +655,8 @@ B2_API b2PixelShape b2Shape_GetPixelShape( b2ShapeId shapeId );
 /// Allows you to update the current pixel shape.
 /// This returns false if the shape is not a pixel shape, the input is invalid, or the world is locked.
 /// This modifies the mass properties only when updateBodyMass is true.
-/// @see b2Body_ApplyMassFromShapes
+/// Deferred mass must be resolved by b2Body_ApplyMassFromShapes or b2Body_SetMassData before stepping.
+/// @see b2Body_ApplyMassFromShapes, b2Body_SetMassData
 B2_API bool b2Shape_SetPixelShape( b2ShapeId shapeId, const b2PixelShape* pixel, bool updateBodyMass );
 
 /// Allows you to change a shape to be a circle or update the current circle.

@@ -48,8 +48,8 @@ enum b2BodyFlags
 	// Used for b2BodyState flags.
 	b2_dynamicFlag = 0x00000200,
 
-	// Flag to indicate the user has used the updateBodyMass option to defer mass
-	// computation but b2Body_ApplyMassFromShapes was not called before the world step.
+	// Flag to indicate the user has deferred mass computation but did not call
+	// b2Body_ApplyMassFromShapes or b2Body_SetMassData before the world step.
 	b2_dirtyMass = 0x00000400,
 
 	// All lock flags

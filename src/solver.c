@@ -729,7 +729,8 @@ static void b2FinalizeBodiesTask( int startIndex, int endIndex, uint32_t threadI
 		sim->force = b2Vec2_zero;
 		sim->torque = 0.0f;
 
-		// If you hit this then it means you deferred mass computation but never called b2Body_ApplyMassFromShapes
+		// If you hit this then it means deferred mass computation was not resolved
+		// by b2Body_ApplyMassFromShapes or b2Body_SetMassData.
 		B2_ASSERT( ( body->flags & b2_dirtyMass ) == 0 );
 
 		body->flags &= ~( b2_isFast | b2_isSpeedCapped | b2_hadTimeOfImpact );

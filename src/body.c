@@ -506,6 +506,24 @@ b2AABB b2Body_ComputeAABB( b2BodyId bodyId )
 	return aabb;
 }
 
+static void b2UpdateBodyExtentsFromShapes( b2World* world, b2Body* body, b2BodySim* bodySim, b2Vec2 localCenter )
+{
+	bodySim->minExtent = B2_HUGE;
+	bodySim->maxExtent = 0.0f;
+
+	int shapeId = body->headShapeId;
+	while ( shapeId != B2_NULL_INDEX )
+	{
+		const b2Shape* shape = b2ShapeArray_Get( &world->shapes, shapeId );
+
+		b2ShapeExtent extent = b2ComputeShapeExtent( shape, localCenter );
+		bodySim->minExtent = b2MinFloat( bodySim->minExtent, extent.minExtent );
+		bodySim->maxExtent = b2MaxFloat( bodySim->maxExtent, extent.maxExtent );
+
+		shapeId = shape->nextShapeId;
+	}
+}
+
 void b2UpdateBodyMassData( b2World* world, b2Body* body )
 {
 	b2BodySim* bodySim = b2GetBodySim( world, body );
@@ -520,8 +538,6 @@ void b2UpdateBodyMassData( b2World* world, b2Body* body )
 	bodySim->invMass = 0.0f;
 	bodySim->invInertia = 0.0f;
 	bodySim->localCenter = b2Vec2_zero;
-	bodySim->minExtent = B2_HUGE;
-	bodySim->maxExtent = 0.0f;
 
 	// Static and kinematic sims have zero mass.
 	if ( body->type != b2_dynamicBody )
@@ -532,17 +548,7 @@ void b2UpdateBodyMassData( b2World* world, b2Body* body )
 		// Need extents for kinematic bodies for sleeping to work correctly.
 		if ( body->type == b2_kinematicBody )
 		{
-			int shapeId = body->headShapeId;
-			while ( shapeId != B2_NULL_INDEX )
-			{
-				const b2Shape* s = b2ShapeArray_Get( &world->shapes, shapeId );
-
-				b2ShapeExtent extent = b2ComputeShapeExtent( s, b2Vec2_zero );
-				bodySim->minExtent = b2MinFloat( bodySim->minExtent, extent.minExtent );
-				bodySim->maxExtent = b2MaxFloat( bodySim->maxExtent, extent.maxExtent );
-
-				shapeId = s->nextShapeId;
-			}
+			b2UpdateBodyExtentsFromShapes( world, body, bodySim, b2Vec2_zero );
 		}
 
 		return;
@@ -627,17 +633,7 @@ void b2UpdateBodyMassData( b2World* world, b2Body* body )
 	}
 
 	// Compute body extents relative to center of mass
-	shapeId = body->headShapeId;
-	while ( shapeId != B2_NULL_INDEX )
-	{
-		const b2Shape* s = b2ShapeArray_Get( &world->shapes, shapeId );
-
-		b2ShapeExtent extent = b2ComputeShapeExtent( s, localCenter );
-		bodySim->minExtent = b2MinFloat( bodySim->minExtent, extent.minExtent );
-		bodySim->maxExtent = b2MaxFloat( bodySim->maxExtent, extent.maxExtent );
-
-		shapeId = s->nextShapeId;
-	}
+	b2UpdateBodyExtentsFromShapes( world, body, bodySim, localCenter );
 }
 
 b2Vec2 b2Body_GetPosition( b2BodyId bodyId )
@@ -1387,6 +1383,8 @@ void b2Body_SetMassData( b2BodyId bodyId, b2MassData massData )
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 	b2BodySim* bodySim = b2GetBodySim( world, body );
 
+	// Manual mass data resolves any deferred shape mass computation.
+	body->flags &= ~b2_dirtyMass;
 	body->mass = massData.mass;
 	body->inertia = massData.rotationalInertia;
 	bodySim->localCenter = massData.center;
@@ -1397,6 +1395,7 @@ void b2Body_SetMassData( b2BodyId bodyId, b2MassData massData )
 
 	bodySim->invMass = body->mass > 0.0f ? 1.0f / body->mass : 0.0f;
 	bodySim->invInertia = body->inertia > 0.0f ? 1.0f / body->inertia : 0.0f;
+	b2UpdateBodyExtentsFromShapes( world, body, bodySim, massData.center );
 }
 
 b2MassData b2Body_GetMassData( b2BodyId bodyId )

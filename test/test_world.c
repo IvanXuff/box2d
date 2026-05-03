@@ -3,12 +3,16 @@
 
 #include "test_macros.h"
 
+#include "body.h"
+#include "physics_world.h"
+
 #include "box2d/box2d.h"
 #include "box2d/collision.h"
 #include "box2d/constants.h"
 #include "box2d/math_functions.h"
 
 #include <stdio.h>
+#include <string.h>
 
 // This is a simple example of building and running a simulation
 // using Box2D. Here we create a large ground box and a small dynamic
@@ -393,6 +397,143 @@ static int TestSensor( void )
 	return 0;
 }
 
+typedef struct TestPixelAssetStorage
+{
+	uint64_t occupancyBits[2];
+	uint8_t featureTypes[64];
+	uint8_t normalIndices[64];
+	b2PixelFeatureRef corners[64];
+	b2PixelFeatureRef edges[128];
+	b2PixelChunk chunks[16];
+	b2PixelAsset asset;
+} TestPixelAssetStorage;
+
+static b2PixelShape BuildTestPixelShape( TestPixelAssetStorage* storage, int width, int height, uint64_t occupancyWord,
+										 uint32_t topologyVersion )
+{
+	memset( storage, 0, sizeof( *storage ) );
+
+	b2PixelAssetBuildConfig config = b2DefaultPixelAssetBuildConfig();
+	config.width = width;
+	config.height = height;
+	config.pixelSize = 1.0f;
+	config.chunkSize = 4;
+	config.supportCornerInterval = 1;
+	config.topologyVersion = topologyVersion;
+
+	uint64_t sourceOccupancy[1] = { occupancyWord };
+	b2PixelAssetBuildBuffers buffers = { 0 };
+	buffers.occupancyBits = storage->occupancyBits;
+	buffers.occupancyWordCapacity = ARRAY_COUNT( storage->occupancyBits );
+	buffers.featureTypes = storage->featureTypes;
+	buffers.featureTypeCapacity = ARRAY_COUNT( storage->featureTypes );
+	buffers.normalIndices = storage->normalIndices;
+	buffers.normalIndexCapacity = ARRAY_COUNT( storage->normalIndices );
+	buffers.corners = storage->corners;
+	buffers.cornerCapacity = ARRAY_COUNT( storage->corners );
+	buffers.edges = storage->edges;
+	buffers.edgeCapacity = ARRAY_COUNT( storage->edges );
+	buffers.chunks = storage->chunks;
+	buffers.chunkCapacity = ARRAY_COUNT( storage->chunks );
+
+	b2PixelAssetBuildResult result = b2BuildPixelAssetFromOccupancy( &config, sourceOccupancy, ARRAY_COUNT( sourceOccupancy ), &buffers );
+	if ( result.success == false )
+	{
+		return (b2PixelShape){ 0 };
+	}
+
+	storage->asset = result.asset;
+	return (b2PixelShape){ &storage->asset, b2Vec2_zero, 0.0f, topologyVersion };
+}
+
+static b2BodySim* GetTestBodySim( b2BodyId bodyId )
+{
+	b2World* world = b2GetWorld( bodyId.world0 );
+	b2Body* body = b2GetBodyFullId( world, bodyId );
+	return b2GetBodySim( world, body );
+}
+
+static int TestSetMassDataResolvesDeferredShapeMass( void )
+{
+	b2WorldDef worldDef = b2DefaultWorldDef();
+	worldDef.gravity = ( b2Vec2 ){ 0.0f, 0.0f };
+	b2WorldId worldId = b2CreateWorld( &worldDef );
+
+	b2BodyDef bodyDef = b2DefaultBodyDef();
+	bodyDef.type = b2_dynamicBody;
+	b2BodyId bodyId = b2CreateBody( worldId, &bodyDef );
+
+	TestPixelAssetStorage smallStorage;
+	b2PixelShape pixelShape = BuildTestPixelShape( &smallStorage, 2, 2, 0xFu, 1 );
+	ENSURE( pixelShape.asset != NULL );
+
+	b2ShapeDef shapeDef = b2DefaultShapeDef();
+	shapeDef.density = 1.0f;
+	shapeDef.updateBodyMass = false;
+	b2ShapeId shapeId = b2CreatePixelShape( bodyId, &shapeDef, &pixelShape );
+	ENSURE( b2Shape_IsValid( shapeId ) );
+
+	b2MassData manualMass = { 0 };
+	manualMass.mass = 7.0f;
+	manualMass.center = ( b2Vec2 ){ 0.25f, 0.0f };
+	manualMass.rotationalInertia = 13.0f;
+	b2Body_SetMassData( bodyId, manualMass );
+	b2BodySim* bodySim = GetTestBodySim( bodyId );
+	ENSURE( bodySim->minExtent > 0.5f && bodySim->minExtent < 0.8f );
+	ENSURE( bodySim->maxExtent > 2.0f && bodySim->maxExtent < 2.5f );
+	float smallMaxExtent = bodySim->maxExtent;
+	b2World_Step( worldId, 1.0f / 60.0f, 4 );
+
+	b2MassData actualMass = b2Body_GetMassData( bodyId );
+	ENSURE( b2AbsFloat( actualMass.mass - manualMass.mass ) < 0.001f );
+	ENSURE( b2AbsFloat( actualMass.rotationalInertia - manualMass.rotationalInertia ) < 0.001f );
+	ENSURE( b2AbsFloat( actualMass.center.x - manualMass.center.x ) < 0.001f );
+	ENSURE( b2AbsFloat( actualMass.center.y ) < 0.001f );
+
+	b2Shape_SetDensity( shapeId, 3.0f, false );
+	manualMass.mass = 9.0f;
+	manualMass.rotationalInertia = 17.0f;
+	b2Body_SetMassData( bodyId, manualMass );
+	b2World_Step( worldId, 1.0f / 60.0f, 4 );
+
+	actualMass = b2Body_GetMassData( bodyId );
+	ENSURE( b2AbsFloat( actualMass.mass - manualMass.mass ) < 0.001f );
+	ENSURE( b2AbsFloat( actualMass.rotationalInertia - manualMass.rotationalInertia ) < 0.001f );
+
+	TestPixelAssetStorage wideStorage;
+	b2PixelShape widePixelShape = BuildTestPixelShape( &wideStorage, 6, 1, 0x3Fu, 2 );
+	ENSURE( widePixelShape.asset != NULL );
+	ENSURE( b2Shape_SetPixelShape( shapeId, &widePixelShape, false ) );
+	manualMass.mass = 11.0f;
+	manualMass.rotationalInertia = 23.0f;
+	b2Body_SetMassData( bodyId, manualMass );
+	bodySim = GetTestBodySim( bodyId );
+	ENSURE( bodySim->minExtent > 0.5f && bodySim->minExtent < 0.8f );
+	ENSURE( bodySim->maxExtent > smallMaxExtent + 1.0f );
+	b2World_Step( worldId, 1.0f / 60.0f, 4 );
+
+	actualMass = b2Body_GetMassData( bodyId );
+	ENSURE( b2AbsFloat( actualMass.mass - manualMass.mass ) < 0.001f );
+	ENSURE( b2AbsFloat( actualMass.rotationalInertia - manualMass.rotationalInertia ) < 0.001f );
+
+	b2DestroyShape( shapeId, false );
+	manualMass.mass = 5.0f;
+	manualMass.rotationalInertia = 19.0f;
+	b2Body_SetMassData( bodyId, manualMass );
+	bodySim = GetTestBodySim( bodyId );
+	ENSURE( bodySim->minExtent == B2_HUGE );
+	ENSURE( bodySim->maxExtent == 0.0f );
+	b2World_Step( worldId, 1.0f / 60.0f, 4 );
+
+	actualMass = b2Body_GetMassData( bodyId );
+	ENSURE( b2AbsFloat( actualMass.mass - manualMass.mass ) < 0.001f );
+	ENSURE( b2AbsFloat( actualMass.rotationalInertia - manualMass.rotationalInertia ) < 0.001f );
+
+	b2DestroyWorld( worldId );
+
+	return 0;
+}
+
 int WorldTest( void )
 {
 	RUN_SUBTEST( HelloWorld );
@@ -402,6 +543,7 @@ int WorldTest( void )
 	RUN_SUBTEST( TestWorldRecycle );
 	RUN_SUBTEST( TestWorldCoverage );
 	RUN_SUBTEST( TestSensor );
+	RUN_SUBTEST( TestSetMassDataResolvesDeferredShapeMass );
 
 	return 0;
 }

@@ -419,6 +419,10 @@ void b2DestroyShape( b2ShapeId shapeId, bool updateBodyMass )
 	{
 		b2UpdateBodyMassData( world, body );
 	}
+	else
+	{
+		body->flags |= b2_dirtyMass;
+	}
 }
 
 b2ChainId b2CreateChain( b2BodyId bodyId, const b2ChainDef* def )
@@ -1247,6 +1251,11 @@ void b2Shape_SetDensity( b2ShapeId shapeId, float density, bool updateBodyMass )
 	{
 		b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
 		b2UpdateBodyMassData( world, body );
+	}
+	else
+	{
+		b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
+		body->flags |= b2_dirtyMass;
 	}
 }
 
