@@ -508,29 +508,13 @@ typedef struct b2PixelFeatureRef
 	uint8_t normalIndex;
 } b2PixelFeatureRef;
 
-/// A precomputed chunk range into the asset feature tables.
-/// @ingroup shape
-typedef struct b2PixelChunk
-{
-	int16_t x;
-	int16_t y;
-	uint16_t width;
-	uint16_t height;
-	uint16_t solidCount;
-	uint16_t cornerCount;
-	uint16_t edgeCount;
-	uint32_t firstCorner;
-	uint32_t firstEdge;
-	b2AABB localAABB;
-} b2PixelChunk;
-
 /// Default pixel disk radius in pixel-size units. A b2PixelShape::diskRadius value of 0 selects this default.
 /// @ingroup shape
 #define b2_defaultPixelDiskRadius 0.62f
 
 /// Caller-owned immutable pixel collision asset view. Box2D does not copy or free these tables.
-/// The feature tables are grouped by canonical asset-grid chunks ordered by (y, x). Within each chunk range, feature ids
-/// are strictly increasing. The asset must contain at least one corner feature for PixelShape-PixelShape contact.
+/// The feature tables are canonical row-major lists with strictly increasing feature ids. The asset must contain at
+/// least one corner feature for PixelShape-PixelShape contact.
 /// @ingroup shape
 typedef struct b2PixelAsset
 {
@@ -545,8 +529,6 @@ typedef struct b2PixelAsset
 	int32_t cornerCount;
 	const b2PixelFeatureRef* edges;
 	int32_t edgeCount;
-	const b2PixelChunk* chunks;
-	int32_t chunkCount;
 	b2AABB occupiedAABB;
 	b2Vec2 centroid;
 	float rotationalInertia;
@@ -572,7 +554,6 @@ typedef struct b2PixelAssetBuildConfig
 	int32_t width;
 	int32_t height;
 	float pixelSize;
-	int32_t chunkSize;
 	int32_t supportCornerInterval;
 	uint32_t topologyVersion;
 } b2PixelAssetBuildConfig;
@@ -591,8 +572,6 @@ typedef struct b2PixelAssetBuildBuffers
 	int32_t cornerCapacity;
 	b2PixelFeatureRef* edges;
 	int32_t edgeCapacity;
-	b2PixelChunk* chunks;
-	int32_t chunkCapacity;
 } b2PixelAssetBuildBuffers;
 
 /// Result from b2BuildPixelAssetFromOccupancy. If success is false, required* fields report the needed capacities.
@@ -606,7 +585,6 @@ typedef struct b2PixelAssetBuildResult
 	int32_t requiredNormalIndices;
 	int32_t requiredCorners;
 	int32_t requiredEdges;
-	int32_t requiredChunks;
 	bool success;
 	bool overflow;
 	bool invalidInput;
@@ -616,15 +594,13 @@ typedef struct b2PixelAssetBuildResult
 /// @ingroup shape
 typedef struct b2PixelNarrowphaseStats
 {
-	int32_t chunkPairTests;
-	int32_t chunkPairs;
+	int32_t sourceFeatures;
 	int32_t cellVisits;
 	int32_t diskTests;
 	int32_t rawContacts;
 	int32_t rawContactAttempts;
 	int32_t manifoldPoints;
-	bool chunkPairTestsCapped;
-	bool chunkPairsCapped;
+	bool sourceFeaturesCapped;
 	bool cellVisitsCapped;
 	bool diskTestsCapped;
 	bool rawContactsCapped;

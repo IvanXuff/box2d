@@ -60,31 +60,6 @@ static bool b2FeatureRefIsValid( const b2PixelAsset* asset, const b2PixelFeature
 	return type == expectedType && b2PixelAsset_IsOccupied( asset, feature->x, feature->y );
 }
 
-static bool b2FeatureRangeIsCanonical( const b2PixelAsset* asset, const b2PixelFeatureRef* features, uint32_t first,
-									   uint16_t count, int16_t chunkX, int16_t chunkY, uint16_t chunkWidth,
-									   uint16_t chunkHeight, uint8_t expectedType )
-{
-	uint16_t previousId = 0;
-	for ( int i = 0; i < count; ++i )
-	{
-		const b2PixelFeatureRef* feature = features + first + i;
-		if ( b2FeatureRefIsValid( asset, feature, expectedType ) == false || feature->id <= previousId )
-		{
-			return false;
-		}
-
-		if ( feature->x < chunkX || feature->x >= chunkX + chunkWidth || feature->y < chunkY ||
-			 feature->y >= chunkY + chunkHeight )
-		{
-			return false;
-		}
-
-		previousId = feature->id;
-	}
-
-	return true;
-}
-
 static float b2NormalizePixelDiskRadiusValue( float diskRadius )
 {
 	return diskRadius == 0.0f ? b2_defaultPixelDiskRadius : diskRadius;
@@ -112,9 +87,8 @@ bool b2IsPixelShapeUsable( const b2PixelShape* shape )
 	int32_t cellCount = 0;
 	if ( b2IsPixelAssetUsable( asset ) == false || b2PixelAsset_GetCellCount( asset, &cellCount ) == false ||
 		 asset->occupancyBits == NULL || asset->featureTypes == NULL || asset->normalIndices == NULL ||
-		 asset->chunks == NULL || asset->chunkCount <= 0 || asset->corners == NULL || asset->cornerCount <= 0 ||
-		 ( asset->edgeCount > 0 && asset->edges == NULL ) || asset->solidCount <= 0 ||
-		 asset->occupancyWordCount < ( cellCount + 63 ) / 64 ||
+		 asset->corners == NULL || asset->cornerCount <= 0 || ( asset->edgeCount > 0 && asset->edges == NULL ) ||
+		 asset->solidCount <= 0 || asset->occupancyWordCount < ( cellCount + 63 ) / 64 ||
 		 b2IsValidAABB( asset->occupiedAABB ) == false || b2IsValidVec2( asset->centroid ) == false ||
 		 b2IsValidFloat( asset->rotationalInertia ) == false || asset->rotationalInertia < 0.0f ||
 		 b2IsValidVec2( shape->localOrigin ) == false )
@@ -135,8 +109,8 @@ bool b2ValidatePixelAsset( const b2PixelAsset* asset )
 	int32_t cellCount = 0;
 	if ( b2IsPixelAssetUsable( asset ) == false || b2PixelAsset_GetCellCount( asset, &cellCount ) == false ||
 		 asset->occupancyBits == NULL || asset->featureTypes == NULL || asset->normalIndices == NULL ||
-		 asset->chunks == NULL || asset->chunkCount <= 0 || asset->corners == NULL || asset->cornerCount <= 0 ||
-		 asset->solidCount <= 0 || b2IsValidAABB( asset->occupiedAABB ) == false || b2IsValidVec2( asset->centroid ) == false ||
+		 asset->corners == NULL || asset->cornerCount <= 0 || asset->solidCount <= 0 ||
+		 b2IsValidAABB( asset->occupiedAABB ) == false || b2IsValidVec2( asset->centroid ) == false ||
 		 b2IsValidFloat( asset->rotationalInertia ) == false || asset->rotationalInertia < 0.0f )
 	{
 		return false;
@@ -232,97 +206,29 @@ bool b2ValidatePixelAsset( const b2PixelAsset* asset )
 		return false;
 	}
 
-	int32_t countedChunkSolids = 0;
-	int16_t previousY = INT16_MIN;
-	int16_t previousX = INT16_MIN;
-	uint32_t expectedFirstCorner = 0;
-	uint32_t expectedFirstEdge = 0;
-	for ( int i = 0; i < asset->chunkCount; ++i )
+	uint16_t previousCornerId = 0;
+	for ( int i = 0; i < asset->cornerCount; ++i )
 	{
-		const b2PixelChunk* chunk = asset->chunks + i;
-		if ( chunk->x < 0 || chunk->y < 0 || chunk->width == 0 || chunk->height == 0 || chunk->solidCount == 0 ||
-			 chunk->x + chunk->width > asset->width || chunk->y + chunk->height > asset->height ||
-			 b2IsValidAABB( chunk->localAABB ) == false )
+		const b2PixelFeatureRef* feature = asset->corners + i;
+		if ( b2FeatureRefIsValid( asset, feature, b2_pixelFeatureCorner ) == false || feature->id <= previousCornerId )
 		{
 			return false;
 		}
-
-		if ( i > 0 && ( chunk->y < previousY || ( chunk->y == previousY && chunk->x <= previousX ) ) )
-		{
-			return false;
-		}
-
-		if ( chunk->firstCorner + chunk->cornerCount > (uint32_t)asset->cornerCount ||
-			 chunk->firstEdge + chunk->edgeCount > (uint32_t)asset->edgeCount )
-		{
-			return false;
-		}
-
-		if ( chunk->firstCorner != expectedFirstCorner || chunk->firstEdge != expectedFirstEdge )
-		{
-			return false;
-		}
-
-		if ( b2FeatureRangeIsCanonical( asset, asset->corners, chunk->firstCorner, chunk->cornerCount, chunk->x, chunk->y,
-										 chunk->width, chunk->height, b2_pixelFeatureCorner ) == false )
-		{
-			return false;
-		}
-
-		if ( chunk->edgeCount > 0 &&
-			 b2FeatureRangeIsCanonical( asset, asset->edges, chunk->firstEdge, chunk->edgeCount, chunk->x, chunk->y,
-										 chunk->width, chunk->height, b2_pixelFeatureEdge ) == false )
-		{
-			return false;
-		}
-
-		int32_t chunkSolids = 0;
-		int32_t chunkMinX = asset->width;
-		int32_t chunkMinY = asset->height;
-		int32_t chunkMaxX = -1;
-		int32_t chunkMaxY = -1;
-		for ( int y = chunk->y; y < chunk->y + chunk->height; ++y )
-		{
-			for ( int x = chunk->x; x < chunk->x + chunk->width; ++x )
-			{
-				if ( b2PixelAsset_IsOccupied( asset, x, y ) == false )
-				{
-					continue;
-				}
-
-				chunkSolids += 1;
-				chunkMinX = b2MinInt( chunkMinX, x );
-				chunkMinY = b2MinInt( chunkMinY, y );
-				chunkMaxX = b2MaxInt( chunkMaxX, x );
-				chunkMaxY = b2MaxInt( chunkMaxY, y );
-			}
-		}
-
-		if ( chunkSolids != chunk->solidCount )
-		{
-			return false;
-		}
-
-		b2AABB computedChunkAABB = { 0 };
-		computedChunkAABB.lowerBound =
-			(b2Vec2){ (float)chunkMinX * asset->pixelSize - halfWidth, (float)chunkMinY * asset->pixelSize - halfHeight };
-		computedChunkAABB.upperBound =
-			(b2Vec2){ ( (float)chunkMaxX + 1.0f ) * asset->pixelSize - halfWidth,
-					  ( (float)chunkMaxY + 1.0f ) * asset->pixelSize - halfHeight };
-		if ( b2AlmostEqualAABB( computedChunkAABB, chunk->localAABB ) == false )
-		{
-			return false;
-		}
-
-		countedChunkSolids += chunkSolids;
-		expectedFirstCorner += chunk->cornerCount;
-		expectedFirstEdge += chunk->edgeCount;
-		previousY = chunk->y;
-		previousX = chunk->x;
+		previousCornerId = feature->id;
 	}
 
-	return countedChunkSolids == asset->solidCount && expectedFirstCorner == (uint32_t)asset->cornerCount &&
-		   expectedFirstEdge == (uint32_t)asset->edgeCount;
+	uint16_t previousEdgeId = 0;
+	for ( int i = 0; i < asset->edgeCount; ++i )
+	{
+		const b2PixelFeatureRef* feature = asset->edges + i;
+		if ( b2FeatureRefIsValid( asset, feature, b2_pixelFeatureEdge ) == false || feature->id <= previousEdgeId )
+		{
+			return false;
+		}
+		previousEdgeId = feature->id;
+	}
+
+	return true;
 }
 
 bool b2IsPixelShapeValid( const b2PixelShape* shape )
@@ -413,7 +319,6 @@ b2PixelAssetBuildConfig b2DefaultPixelAssetBuildConfig( void )
 {
 	b2PixelAssetBuildConfig config = { 0 };
 	config.pixelSize = 1.0f;
-	config.chunkSize = 4;
 	config.supportCornerInterval = 4;
 	config.topologyVersion = 1;
 	return config;
@@ -427,13 +332,7 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	b2PixelAssetBuildResult result = { 0 };
 	if ( config == NULL || sourceOccupancyBits == NULL || config->width <= 0 || config->height <= 0 ||
 		 config->width > INT16_MAX || config->height > INT16_MAX || config->width > INT32_MAX / config->height ||
-		 b2IsValidFloat( config->pixelSize ) == false || config->pixelSize <= 0.0f || config->chunkSize <= 0 )
-	{
-		result.invalidInput = true;
-		return result;
-	}
-
-	if ( config->chunkSize > INT32_MAX / 2 )
+		 b2IsValidFloat( config->pixelSize ) == false || config->pixelSize <= 0.0f )
 	{
 		result.invalidInput = true;
 		return result;
@@ -510,36 +409,20 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 		}
 	}
 
-	int32_t chunkSize = config->chunkSize;
-	for ( int32_t chunkY = 0; chunkY < config->height; chunkY += chunkSize )
+	for ( int32_t y = 0; y < config->height; ++y )
 	{
-		int32_t chunkHeight = b2MinInt( chunkSize, config->height - chunkY );
-		int32_t chunkMaxY = chunkY + chunkHeight - 1;
-		for ( int32_t chunkX = 0; chunkX < config->width; chunkX += chunkSize )
+		for ( int32_t x = 0; x < config->width; ++x )
 		{
-			int32_t chunkWidth = b2MinInt( chunkSize, config->width - chunkX );
-			int32_t chunkMaxX = chunkX + chunkWidth - 1;
-			int32_t chunkSolidCount = 0;
-			for ( int32_t y = chunkY; y <= chunkMaxY; ++y )
+			if ( b2SourceOccupancyCell( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height, x, y ) ==
+				 false )
 			{
-				for ( int32_t x = chunkX; x <= chunkMaxX; ++x )
-				{
-					if ( b2SourceOccupancyCell( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height, x,
-												y ) == false )
-					{
-						continue;
-					}
-
-					chunkSolidCount += 1;
-					uint8_t type = b2ClassifyPixelFeature( sourceOccupancyBits, sourceOccupancyWordCount, config->width,
-															config->height, x, y, minX, minY, maxX, maxY,
-															config->supportCornerInterval );
-					result.requiredCorners += type == b2_pixelFeatureCorner ? 1 : 0;
-					result.requiredEdges += type == b2_pixelFeatureEdge ? 1 : 0;
-				}
+				continue;
 			}
 
-			result.requiredChunks += chunkSolidCount > 0 ? 1 : 0;
+			uint8_t type = b2ClassifyPixelFeature( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height,
+													x, y, minX, minY, maxX, maxY, config->supportCornerInterval );
+			result.requiredCorners += type == b2_pixelFeatureCorner ? 1 : 0;
+			result.requiredEdges += type == b2_pixelFeatureEdge ? 1 : 0;
 		}
 	}
 
@@ -550,11 +433,11 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	}
 
 	bool hasCapacity = buffers != NULL && buffers->occupancyBits != NULL && buffers->featureTypes != NULL &&
-					   buffers->normalIndices != NULL && buffers->corners != NULL && buffers->chunks != NULL &&
+					   buffers->normalIndices != NULL && buffers->corners != NULL &&
 					   buffers->occupancyWordCapacity >= result.requiredOccupancyWords &&
 					   buffers->featureTypeCapacity >= result.requiredFeatureTypes &&
 					   buffers->normalIndexCapacity >= result.requiredNormalIndices &&
-					   buffers->cornerCapacity >= result.requiredCorners && buffers->chunkCapacity >= result.requiredChunks &&
+					   buffers->cornerCapacity >= result.requiredCorners &&
 					   ( result.requiredEdges == 0 ||
 						 ( buffers->edges != NULL && buffers->edgeCapacity >= result.requiredEdges ) );
 	if ( hasCapacity == false )
@@ -576,82 +459,36 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 
 	int32_t cornerCount = 0;
 	int32_t edgeCount = 0;
-	int32_t chunkCount = 0;
-	for ( int32_t chunkY = 0; chunkY < config->height; chunkY += chunkSize )
+	for ( int32_t y = 0; y < config->height; ++y )
 	{
-		int32_t chunkHeight = b2MinInt( chunkSize, config->height - chunkY );
-		int32_t chunkMaxY = chunkY + chunkHeight - 1;
-		for ( int32_t chunkX = 0; chunkX < config->width; chunkX += chunkSize )
+		for ( int32_t x = 0; x < config->width; ++x )
 		{
-			int32_t chunkWidth = b2MinInt( chunkSize, config->width - chunkX );
-			int32_t chunkMaxX = chunkX + chunkWidth - 1;
-			int32_t chunkSolidCount = 0;
-			int32_t localMinX = config->width;
-			int32_t localMinY = config->height;
-			int32_t localMaxX = -1;
-			int32_t localMaxY = -1;
-			uint32_t firstCorner = (uint32_t)cornerCount;
-			uint32_t firstEdge = (uint32_t)edgeCount;
-
-			for ( int32_t y = chunkY; y <= chunkMaxY; ++y )
-			{
-				for ( int32_t x = chunkX; x <= chunkMaxX; ++x )
-				{
-					if ( b2SourceOccupancyCell( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height, x,
-												y ) == false )
-					{
-						continue;
-					}
-
-					chunkSolidCount += 1;
-					localMinX = b2MinInt( localMinX, x );
-					localMinY = b2MinInt( localMinY, y );
-					localMaxX = b2MaxInt( localMaxX, x );
-					localMaxY = b2MaxInt( localMaxY, y );
-					uint8_t type = b2ClassifyPixelFeature( sourceOccupancyBits, sourceOccupancyWordCount, config->width,
-															config->height, x, y, minX, minY, maxX, maxY,
-															config->supportCornerInterval );
-					int32_t index = y * config->width + x;
-					buffers->featureTypes[index] = type;
-
-					b2PixelFeatureRef feature = { 0 };
-					feature.x = (int16_t)x;
-					feature.y = (int16_t)y;
-					feature.id = (uint16_t)( index + 1 );
-					feature.type = type;
-					feature.normalIndex = 0;
-
-					if ( type == b2_pixelFeatureCorner )
-					{
-						buffers->corners[cornerCount++] = feature;
-					}
-					else if ( type == b2_pixelFeatureEdge )
-					{
-						buffers->edges[edgeCount++] = feature;
-					}
-				}
-			}
-
-			if ( chunkSolidCount == 0 )
+			if ( b2SourceOccupancyCell( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height, x, y ) ==
+				 false )
 			{
 				continue;
 			}
 
-			b2PixelChunk* chunk = buffers->chunks + chunkCount++;
-			*chunk = (b2PixelChunk){ 0 };
-			chunk->x = (int16_t)localMinX;
-			chunk->y = (int16_t)localMinY;
-			chunk->width = (uint16_t)( localMaxX - localMinX + 1 );
-			chunk->height = (uint16_t)( localMaxY - localMinY + 1 );
-			chunk->solidCount = (uint16_t)chunkSolidCount;
-			chunk->firstCorner = firstCorner;
-			chunk->cornerCount = (uint16_t)( cornerCount - (int32_t)firstCorner );
-			chunk->firstEdge = firstEdge;
-			chunk->edgeCount = (uint16_t)( edgeCount - (int32_t)firstEdge );
-			chunk->localAABB.lowerBound =
-				(b2Vec2){ (float)localMinX * config->pixelSize - halfWidth, (float)localMinY * config->pixelSize - halfHeight };
-			chunk->localAABB.upperBound = (b2Vec2){ ( (float)localMaxX + 1.0f ) * config->pixelSize - halfWidth,
-													( (float)localMaxY + 1.0f ) * config->pixelSize - halfHeight };
+			uint8_t type = b2ClassifyPixelFeature( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height,
+													x, y, minX, minY, maxX, maxY, config->supportCornerInterval );
+			int32_t index = y * config->width + x;
+			buffers->featureTypes[index] = type;
+
+			b2PixelFeatureRef feature = { 0 };
+			feature.x = (int16_t)x;
+			feature.y = (int16_t)y;
+			feature.id = (uint16_t)( index + 1 );
+			feature.type = type;
+			feature.normalIndex = 0;
+
+			if ( type == b2_pixelFeatureCorner )
+			{
+				buffers->corners[cornerCount++] = feature;
+			}
+			else if ( type == b2_pixelFeatureEdge )
+			{
+				buffers->edges[edgeCount++] = feature;
+			}
 		}
 	}
 
@@ -666,8 +503,6 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	result.asset.cornerCount = cornerCount;
 	result.asset.edges = result.requiredEdges > 0 ? buffers->edges : NULL;
 	result.asset.edgeCount = edgeCount;
-	result.asset.chunks = buffers->chunks;
-	result.asset.chunkCount = chunkCount;
 	result.asset.occupiedAABB.lowerBound =
 		(b2Vec2){ (float)minX * config->pixelSize - halfWidth, (float)minY * config->pixelSize - halfHeight };
 	result.asset.occupiedAABB.upperBound =

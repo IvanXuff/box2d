@@ -13,8 +13,7 @@
 
 enum
 {
-	b2_maxPixelChunkPairTests = 512,
-	b2_maxPixelChunkPairs = 128,
+	b2_maxPixelSourceFeatures = 1024,
 	b2_maxPixelCellVisits = 1024,
 	b2_maxPixelDiskTests = 256,
 	b2_maxPixelRawContacts = 96,
@@ -35,13 +34,11 @@ typedef struct b2PixelRawBuffer
 {
 	b2PixelRawContact contacts[b2_maxPixelRawContacts];
 	int count;
-	int chunkPairTests;
-	int chunkPairs;
+	int sourceFeatures;
 	int cellVisits;
 	int diskTests;
 	int rawContactAttempts;
-	bool chunkPairTestsCapped;
-	bool chunkPairsCapped;
+	bool sourceFeaturesCapped;
 	bool cellVisitsCapped;
 	bool diskTestsCapped;
 	bool rawContactsCapped;
@@ -55,41 +52,19 @@ static void b2PublishPixelStats( const b2PixelRawBuffer* buffer, const b2Manifol
 		return;
 	}
 
-	stats->chunkPairTests = buffer == NULL ? 0 : buffer->chunkPairTests;
-	stats->chunkPairs = buffer == NULL ? 0 : buffer->chunkPairs;
+	stats->sourceFeatures = buffer == NULL ? 0 : buffer->sourceFeatures;
 	stats->cellVisits = buffer == NULL ? 0 : buffer->cellVisits;
 	stats->diskTests = buffer == NULL ? 0 : buffer->diskTests;
 	stats->rawContacts = buffer == NULL ? 0 : buffer->count;
 	stats->rawContactAttempts = buffer == NULL ? 0 : buffer->rawContactAttempts;
 	stats->manifoldPoints = manifold == NULL ? 0 : manifold->pointCount;
-	stats->chunkPairTestsCapped = buffer != NULL && buffer->chunkPairTestsCapped;
-	stats->chunkPairsCapped = buffer != NULL && buffer->chunkPairsCapped;
+	stats->sourceFeaturesCapped = buffer != NULL && buffer->sourceFeaturesCapped;
 	stats->cellVisitsCapped = buffer != NULL && buffer->cellVisitsCapped;
 	stats->diskTestsCapped = buffer != NULL && buffer->diskTestsCapped;
 	stats->rawContactsCapped = buffer != NULL && buffer->rawContactsCapped;
 	stats->rescueCandidate = rescueCandidate;
 	stats->rescueUsed = rescueUsed;
 	stats->invalidInput = invalidInput;
-}
-
-static b2AABB b2TransformPixelLocalAABB( b2AABB local, b2Transform xf, b2Vec2 origin, float inflate )
-{
-	local.lowerBound = b2Add( local.lowerBound, origin );
-	local.upperBound = b2Add( local.upperBound, origin );
-
-	b2Vec2 points[4] = {
-		{ local.lowerBound.x, local.lowerBound.y },
-		{ local.upperBound.x, local.lowerBound.y },
-		{ local.upperBound.x, local.upperBound.y },
-		{ local.lowerBound.x, local.upperBound.y },
-	};
-
-	for ( int i = 0; i < 4; ++i )
-	{
-		points[i] = b2TransformPoint( xf, points[i] );
-	}
-
-	return b2MakeAABB( points, 4, inflate );
 }
 
 static b2Vec2 b2PixelShape_GetWorldCenter( const b2PixelShape* shape, b2Transform xf )
@@ -221,93 +196,54 @@ static void b2GatherPixelCornerContacts( const b2PixelShape* source, b2Transform
 		fallbackNormal = (b2Vec2){ 1.0f, 0.0f };
 	}
 
-	for ( int chunkIndexSource = 0; chunkIndexSource < assetSource->chunkCount; ++chunkIndexSource )
+	for ( int cornerIndex = 0; cornerIndex < assetSource->cornerCount; ++cornerIndex )
 	{
-		const b2PixelChunk* chunkSource = assetSource->chunks + chunkIndexSource;
-		b2AABB aabbSource =
-			b2TransformPixelLocalAABB( chunkSource->localAABB, xfSource, source->localOrigin, searchRadius );
-
-		for ( int chunkIndexTarget = 0; chunkIndexTarget < assetTarget->chunkCount; ++chunkIndexTarget )
+		if ( buffer->sourceFeatures >= b2_maxPixelSourceFeatures )
 		{
-			if ( buffer->chunkPairTests >= b2_maxPixelChunkPairTests )
-			{
-				buffer->chunkPairTestsCapped = true;
-				return;
-			}
+			buffer->sourceFeaturesCapped = true;
+			return;
+		}
 
-			buffer->chunkPairTests += 1;
-			const b2PixelChunk* chunkTarget = assetTarget->chunks + chunkIndexTarget;
-			b2AABB aabbTarget =
-				b2TransformPixelLocalAABB( chunkTarget->localAABB, xfTarget, target->localOrigin, searchRadius );
-			if ( b2AABB_Overlaps( aabbSource, aabbTarget ) == false )
-			{
-				continue;
-			}
+		buffer->sourceFeatures += 1;
+		const b2PixelFeatureRef* corner = assetSource->corners + cornerIndex;
+		b2Vec2 worldCorner = b2TransformPoint( xfSource, b2PixelShape_GetPixelCenter( source, corner->x, corner->y ) );
+		b2Vec2 targetLocal = b2Sub( b2InvTransformPoint( xfTarget, worldCorner ), target->localOrigin );
+		int centerX = (int)floorf( targetLocal.x / assetTarget->pixelSize + 0.5f * (float)assetTarget->width );
+		int centerY = (int)floorf( targetLocal.y / assetTarget->pixelSize + 0.5f * (float)assetTarget->height );
+		centerX = b2ClampInt( centerX, 0, assetTarget->width - 1 );
+		centerY = b2ClampInt( centerY, 0, assetTarget->height - 1 );
 
-			if ( buffer->chunkPairs >= b2_maxPixelChunkPairs )
+		for ( int dy = -searchCells; dy <= searchCells; ++dy )
+		{
+			for ( int dx = -searchCells; dx <= searchCells; ++dx )
 			{
-				buffer->chunkPairsCapped = true;
-				return;
-			}
-
-			buffer->chunkPairs += 1;
-			uint32_t firstCorner = chunkSource->firstCorner;
-			uint32_t endCorner = firstCorner + chunkSource->cornerCount;
-			if ( endCorner > (uint32_t)assetSource->cornerCount )
-			{
-				endCorner = (uint32_t)assetSource->cornerCount;
-			}
-
-			for ( uint32_t cornerIndex = firstCorner; cornerIndex < endCorner; ++cornerIndex )
-			{
-				const b2PixelFeatureRef* corner = assetSource->corners + cornerIndex;
-				b2Vec2 worldCorner =
-					b2TransformPoint( xfSource, b2PixelShape_GetPixelCenter( source, corner->x, corner->y ) );
-				b2Vec2 targetLocal = b2Sub( b2InvTransformPoint( xfTarget, worldCorner ), target->localOrigin );
-				int centerX = (int)floorf( targetLocal.x / assetTarget->pixelSize + 0.5f * (float)assetTarget->width );
-				int centerY = (int)floorf( targetLocal.y / assetTarget->pixelSize + 0.5f * (float)assetTarget->height );
-				centerX = b2ClampInt( centerX, 0, assetTarget->width - 1 );
-				centerY = b2ClampInt( centerY, 0, assetTarget->height - 1 );
-
-				for ( int dy = -searchCells; dy <= searchCells; ++dy )
+				if ( buffer->cellVisits >= b2_maxPixelCellVisits )
 				{
-					for ( int dx = -searchCells; dx <= searchCells; ++dx )
-					{
-						if ( buffer->cellVisits >= b2_maxPixelCellVisits )
-						{
-							buffer->cellVisitsCapped = true;
-							return;
-						}
+					buffer->cellVisitsCapped = true;
+					return;
+				}
 
-						buffer->cellVisits += 1;
-						if ( buffer->diskTests >= b2_maxPixelDiskTests )
-						{
-							buffer->diskTestsCapped = true;
-							return;
-						}
+				buffer->cellVisits += 1;
+				if ( buffer->diskTests >= b2_maxPixelDiskTests )
+				{
+					buffer->diskTestsCapped = true;
+					return;
+				}
 
-						int x = centerX + dx;
-						int y = centerY + dy;
-						uint8_t typeB = b2PixelAsset_GetFeatureType( assetTarget, x, y );
-						if ( typeB == b2_pixelFeatureEmpty || typeB == b2_pixelFeatureInternal )
-						{
-							continue;
-						}
+				int x = centerX + dx;
+				int y = centerY + dy;
+				uint8_t typeB = b2PixelAsset_GetFeatureType( assetTarget, x, y );
+				if ( typeB == b2_pixelFeatureEmpty || typeB == b2_pixelFeatureInternal )
+				{
+					continue;
+				}
 
-						// The source traversal is corner-only; if this ever widens, keep edge-edge out of the hot path.
-						if ( corner->type == b2_pixelFeatureEdge && typeB == b2_pixelFeatureEdge )
-						{
-							continue;
-						}
-
-						buffer->diskTests += 1;
-						b2PixelRawContact contact;
-						if ( b2DiskTestPixelFeatures( source, xfSource, corner, target, xfTarget, x, y, typeB,
-													   reverseToOriginalOrder, fallbackNormal, &contact ) )
-						{
-							b2PushPixelRawContact( buffer, contact );
-						}
-					}
+				buffer->diskTests += 1;
+				b2PixelRawContact contact;
+				if ( b2DiskTestPixelFeatures( source, xfSource, corner, target, xfTarget, x, y, typeB,
+											   reverseToOriginalOrder, fallbackNormal, &contact ) )
+				{
+					b2PushPixelRawContact( buffer, contact );
 				}
 			}
 		}
@@ -317,7 +253,7 @@ static void b2GatherPixelCornerContacts( const b2PixelShape* source, b2Transform
 static bool b2HasPixelRescueCandidate( const b2AABB* aabbA, const b2AABB* aabbB, const b2PixelRawBuffer* buffer )
 {
 	return buffer != NULL && buffer->count == 0 && b2AABB_Overlaps( *aabbA, *aabbB ) &&
-		   ( buffer->chunkPairTestsCapped || buffer->chunkPairsCapped || buffer->cellVisitsCapped || buffer->diskTestsCapped ||
+		   ( buffer->sourceFeaturesCapped || buffer->cellVisitsCapped || buffer->diskTestsCapped ||
 			 buffer->rawContactsCapped );
 }
 
