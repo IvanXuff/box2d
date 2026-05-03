@@ -519,6 +519,11 @@ B2_API b2ShapeId b2CreateCapsuleShape( b2BodyId bodyId, const b2ShapeDef* def, c
 /// @return the shape id for accessing the shape
 B2_API b2ShapeId b2CreatePolygonShape( b2BodyId bodyId, const b2ShapeDef* def, const b2Polygon* polygon );
 
+/// Create a pixel shape and attach it to a body. The shape stores a caller-owned immutable asset view.
+/// Contacts are not created until the next time step.
+/// @return the shape id for accessing the shape
+B2_API b2ShapeId b2CreatePixelShape( b2BodyId bodyId, const b2ShapeDef* def, const b2PixelShape* pixel );
+
 /// Destroy a shape. You may defer the body mass update which can improve performance if several shapes on a
 ///	body are destroyed at once.
 ///	@see b2Body_ApplyMassFromShapes
@@ -640,6 +645,9 @@ B2_API b2Capsule b2Shape_GetCapsule( b2ShapeId shapeId );
 
 /// Get a copy of the shape's convex polygon. Asserts the type is correct.
 B2_API b2Polygon b2Shape_GetPolygon( b2ShapeId shapeId );
+
+/// Get a copy of the shape's pixel geometry. Asserts the type is correct.
+B2_API b2PixelShape b2Shape_GetPixelShape( b2ShapeId shapeId );
 
 /// Allows you to change a shape to be a circle or update the current circle.
 /// This does not modify the mass properties.

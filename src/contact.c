@@ -7,6 +7,7 @@
 #include "body.h"
 #include "core.h"
 #include "island.h"
+#include "pixel_contact.h"
 #include "physics_world.h"
 #include "shape.h"
 #include "solver_set.h"
@@ -144,6 +145,13 @@ static b2Manifold b2PolygonManifold( const b2Shape* shapeA, b2Transform xfA, con
 	return b2CollidePolygons( &shapeA->polygon, xfA, &shapeB->polygon, xfB );
 }
 
+static b2Manifold b2PixelManifold( const b2Shape* shapeA, b2Transform xfA, const b2Shape* shapeB, b2Transform xfB,
+								   b2SimplexCache* cache )
+{
+	B2_UNUSED( cache );
+	return b2PixelShapeManifold( shapeA, xfA, shapeB, xfB );
+}
+
 static b2Manifold b2SegmentAndCircleManifold( const b2Shape* shapeA, b2Transform xfA, const b2Shape* shapeB, b2Transform xfB,
 											  b2SimplexCache* cache )
 {
@@ -209,6 +217,7 @@ void b2InitializeContactRegisters( void )
 		b2AddType( b2PolygonAndCircleManifold, b2_polygonShape, b2_circleShape );
 		b2AddType( b2PolygonAndCapsuleManifold, b2_polygonShape, b2_capsuleShape );
 		b2AddType( b2PolygonManifold, b2_polygonShape, b2_polygonShape );
+		b2AddType( b2PixelManifold, b2_pixelShape, b2_pixelShape );
 		b2AddType( b2SegmentAndCircleManifold, b2_segmentShape, b2_circleShape );
 		b2AddType( b2SegmentAndCapsuleManifold, b2_segmentShape, b2_capsuleShape );
 		b2AddType( b2SegmentAndPolygonManifold, b2_segmentShape, b2_polygonShape );

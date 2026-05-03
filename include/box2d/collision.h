@@ -7,6 +7,7 @@
 #include "math_functions.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct b2SimplexCache b2SimplexCache;
 typedef struct b2Hull b2Hull;
@@ -486,6 +487,77 @@ typedef struct b2TOIOutput
 	float fraction;
 } b2TOIOutput;
 
+/// Pixel feature classification for b2PixelAsset::featureTypes.
+/// @ingroup shape
+typedef enum b2PixelFeatureType
+{
+	b2_pixelFeatureEmpty = 0,
+	b2_pixelFeatureInternal = 1,
+	b2_pixelFeatureEdge = 2,
+	b2_pixelFeatureCorner = 3,
+} b2PixelFeatureType;
+
+/// A precomputed pixel boundary feature. The id must be stable for a given asset topology.
+/// @ingroup shape
+typedef struct b2PixelFeatureRef
+{
+	int16_t x;
+	int16_t y;
+	uint16_t id;
+	uint8_t type;
+	uint8_t normalIndex;
+} b2PixelFeatureRef;
+
+/// A precomputed chunk range into the asset feature tables.
+/// @ingroup shape
+typedef struct b2PixelChunk
+{
+	int16_t x;
+	int16_t y;
+	uint16_t width;
+	uint16_t height;
+	uint16_t solidCount;
+	uint16_t cornerCount;
+	uint16_t edgeCount;
+	uint32_t firstCorner;
+	uint32_t firstEdge;
+	b2AABB localAABB;
+} b2PixelChunk;
+
+/// Caller-owned immutable pixel collision asset view. Box2D does not copy or free these tables.
+/// @ingroup shape
+typedef struct b2PixelAsset
+{
+	int32_t width;
+	int32_t height;
+	float pixelSize;
+	const uint64_t* occupancyBits;
+	int32_t occupancyWordCount;
+	const uint8_t* featureTypes;
+	const uint8_t* normalIndices;
+	const b2PixelFeatureRef* corners;
+	int32_t cornerCount;
+	const b2PixelFeatureRef* edges;
+	int32_t edgeCount;
+	const b2PixelChunk* chunks;
+	int32_t chunkCount;
+	b2AABB occupiedAABB;
+	b2Vec2 centroid;
+	float rotationalInertia;
+	int32_t solidCount;
+	uint32_t topologyVersion;
+} b2PixelAsset;
+
+/// Pixel shape geometry. The asset is a caller-owned immutable view and must outlive the shape.
+/// @ingroup shape
+typedef struct b2PixelShape
+{
+	const b2PixelAsset* asset;
+	b2Vec2 localOrigin;
+	float diskRadius;
+	uint32_t topologyVersion;
+} b2PixelShape;
+
 /// Compute the upper bound on time before two shapes penetrate. Time is represented as
 /// a fraction between [0,tMax]. This uses a swept separating axis and may miss some intermediate,
 /// non-tunneling collisions. If you change the time interval, you should call this function
@@ -599,6 +671,10 @@ B2_API b2Manifold b2CollidePolygonAndCapsule( const b2Polygon* polygonA, b2Trans
 
 /// Compute the contact manifold between two polygons
 B2_API b2Manifold b2CollidePolygons( const b2Polygon* polygonA, b2Transform xfA, const b2Polygon* polygonB, b2Transform xfB );
+
+/// Compute the contact manifold between two pixel shapes
+B2_API b2Manifold b2CollidePixelShapes( const b2PixelShape* pixelA, b2Transform xfA, const b2PixelShape* pixelB,
+										b2Transform xfB );
 
 /// Compute the contact manifold between an segment and a polygon
 B2_API b2Manifold b2CollideSegmentAndPolygon( const b2Segment* segmentA, b2Transform xfA, const b2Polygon* polygonB,

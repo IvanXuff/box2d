@@ -43,6 +43,10 @@ set(BOX2D_SOURCE_FILES
 	mover.c
 	physics_world.c
 	physics_world.h
+	pixel_contact.c
+	pixel_contact.h
+	pixel_shape.c
+	pixel_shape.h
 	prismatic_joint.c
 	revolute_joint.c
 	sensor.c

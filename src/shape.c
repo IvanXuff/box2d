@@ -6,6 +6,7 @@
 #include "body.h"
 #include "broad_phase.h"
 #include "contact.h"
+#include "pixel_shape.h"
 #include "physics_world.h"
 #include "sensor.h"
 
@@ -79,6 +80,12 @@ static float b2ComputeShapeMargin( b2Shape* shape )
 		}
 		break;
 
+		case b2_pixelShape:
+		{
+			margin = b2GetPixelShapeMaxExtent( &shape->pixel, shape->localCentroid );
+		}
+		break;
+
 		default:
 			B2_VALIDATE( false );
 			return B2_MAX_AABB_MARGIN;
@@ -146,6 +153,18 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 
 		case b2_chainSegmentShape:
 			shape->chainSegment = *(const b2ChainSegment*)geometry;
+			break;
+
+		case b2_pixelShape:
+			shape->pixel = *(const b2PixelShape*)geometry;
+			if ( shape->pixel.asset != NULL && shape->pixel.diskRadius <= 0.0f )
+			{
+				shape->pixel.diskRadius = 0.62f;
+			}
+			if ( shape->pixel.asset != NULL && shape->pixel.topologyVersion == 0 )
+			{
+				shape->pixel.topologyVersion = shape->pixel.asset->topologyVersion;
+			}
 			break;
 
 		default:
@@ -267,6 +286,16 @@ b2ShapeId b2CreatePolygonShape( b2BodyId bodyId, const b2ShapeDef* def, const b2
 {
 	B2_ASSERT( b2IsValidFloat( polygon->radius ) && polygon->radius >= 0.0f );
 	return b2CreateShape( bodyId, def, polygon, b2_polygonShape );
+}
+
+b2ShapeId b2CreatePixelShape( b2BodyId bodyId, const b2ShapeDef* def, const b2PixelShape* pixel )
+{
+	if ( b2IsPixelShapeUsable( pixel ) == false || b2IsPixelAssetValid( pixel->asset ) == false )
+	{
+		return b2_nullShapeId;
+	}
+
+	return b2CreateShape( bodyId, def, pixel, b2_pixelShape );
 }
 
 b2ShapeId b2CreateSegmentShape( b2BodyId bodyId, const b2ShapeDef* def, const b2Segment* segment )
@@ -645,6 +674,8 @@ b2AABB b2ComputeShapeAABB( const b2Shape* shape, b2Transform xf )
 			return b2ComputeSegmentAABB( &shape->segment, xf );
 		case b2_chainSegmentShape:
 			return b2ComputeSegmentAABB( &shape->chainSegment.segment, xf );
+		case b2_pixelShape:
+			return b2ComputePixelShapeAABB( &shape->pixel, xf );
 		default:
 		{
 			B2_ASSERT( false );
@@ -668,6 +699,8 @@ b2Vec2 b2GetShapeCentroid( const b2Shape* shape )
 			return b2Lerp( shape->segment.point1, shape->segment.point2, 0.5f );
 		case b2_chainSegmentShape:
 			return b2Lerp( shape->chainSegment.segment.point1, shape->chainSegment.segment.point2, 0.5f );
+		case b2_pixelShape:
+			return b2GetPixelShapeCentroid( &shape->pixel );
 		default:
 			return b2Vec2_zero;
 	}
@@ -703,6 +736,11 @@ float b2GetShapePerimeter( const b2Shape* shape )
 			return 2.0f * b2Length( b2Sub( shape->segment.point1, shape->segment.point2 ) );
 		case b2_chainSegmentShape:
 			return 2.0f * b2Length( b2Sub( shape->chainSegment.segment.point1, shape->chainSegment.segment.point2 ) );
+		case b2_pixelShape:
+		{
+			b2AABB aabb = shape->pixel.asset == NULL ? (b2AABB){ b2Vec2_zero, b2Vec2_zero } : shape->pixel.asset->occupiedAABB;
+			return 2.0f * ( ( aabb.upperBound.x - aabb.lowerBound.x ) + ( aabb.upperBound.y - aabb.lowerBound.y ) );
+		}
 		default:
 			return 0.0f;
 	}
@@ -755,6 +793,31 @@ float b2GetShapeProjectedPerimeter( const b2Shape* shape, b2Vec2 line )
 			return b2AbsFloat( value2 - value1 );
 		}
 
+		case b2_pixelShape:
+		{
+			if ( shape->pixel.asset == NULL )
+			{
+				return 0.0f;
+			}
+
+			b2AABB aabb = shape->pixel.asset->occupiedAABB;
+			b2Vec2 points[4] = {
+				b2Add( (b2Vec2){ aabb.lowerBound.x, aabb.lowerBound.y }, shape->pixel.localOrigin ),
+				b2Add( (b2Vec2){ aabb.upperBound.x, aabb.lowerBound.y }, shape->pixel.localOrigin ),
+				b2Add( (b2Vec2){ aabb.upperBound.x, aabb.upperBound.y }, shape->pixel.localOrigin ),
+				b2Add( (b2Vec2){ aabb.lowerBound.x, aabb.upperBound.y }, shape->pixel.localOrigin ),
+			};
+			float lower = b2Dot( points[0], line );
+			float upper = lower;
+			for ( int i = 1; i < 4; ++i )
+			{
+				float value = b2Dot( points[i], line );
+				lower = b2MinFloat( lower, value );
+				upper = b2MaxFloat( upper, value );
+			}
+			return upper - lower + 2.0f * shape->pixel.diskRadius * shape->pixel.asset->pixelSize;
+		}
+
 		default:
 			return 0.0f;
 	}
@@ -770,6 +833,8 @@ b2MassData b2ComputeShapeMass( const b2Shape* shape )
 			return b2ComputeCircleMass( &shape->circle, shape->density );
 		case b2_polygonShape:
 			return b2ComputePolygonMass( &shape->polygon, shape->density );
+		case b2_pixelShape:
+			return b2ComputePixelShapeMass( &shape->pixel, shape->density );
 		default:
 			return (b2MassData){ 0 };
 	}
@@ -835,6 +900,14 @@ b2ShapeExtent b2ComputeShapeExtent( const b2Shape* shape, b2Vec2 localCenter )
 			b2Vec2 c1 = b2Sub( shape->chainSegment.segment.point1, localCenter );
 			b2Vec2 c2 = b2Sub( shape->chainSegment.segment.point2, localCenter );
 			extent.maxExtent = sqrtf( b2MaxFloat( b2LengthSquared( c1 ), b2LengthSquared( c2 ) ) );
+		}
+		break;
+
+		case b2_pixelShape:
+		{
+			float radius = shape->pixel.asset == NULL ? 0.0f : shape->pixel.diskRadius * shape->pixel.asset->pixelSize;
+			extent.minExtent = radius;
+			extent.maxExtent = b2GetPixelShapeMaxExtent( &shape->pixel, localCenter );
 		}
 		break;
 
@@ -1076,6 +1149,9 @@ bool b2Shape_TestPoint( b2ShapeId shapeId, b2Vec2 point )
 
 		case b2_polygonShape:
 			return b2PointInPolygon( &shape->polygon, localPoint );
+
+		case b2_pixelShape:
+			return b2PointInPixelShape( &shape->pixel, localPoint );
 
 		default:
 			return false;
@@ -1451,6 +1527,14 @@ b2Polygon b2Shape_GetPolygon( b2ShapeId shapeId )
 	b2Shape* shape = b2GetShape( world, shapeId );
 	B2_ASSERT( shape->type == b2_polygonShape );
 	return shape->polygon;
+}
+
+b2PixelShape b2Shape_GetPixelShape( b2ShapeId shapeId )
+{
+	b2World* world = b2GetWorld( shapeId.world0 );
+	b2Shape* shape = b2GetShape( world, shapeId );
+	B2_ASSERT( shape->type == b2_pixelShape );
+	return shape->pixel;
 }
 
 void b2Shape_SetCircle( b2ShapeId shapeId, const b2Circle* circle )

@@ -348,6 +348,9 @@ typedef enum b2ShapeType
 	/// A line segment owned by a chain shape
 	b2_chainSegmentShape,
 
+	/// A caller-owned immutable pixel occupancy shape
+	b2_pixelShape,
+
 	/// The number of shape types
 	b2_shapeTypeCount
 } b2ShapeType;
