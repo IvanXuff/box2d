@@ -601,6 +601,8 @@ typedef struct b2PixelAssetBuildResult
 	int32_t requiredEdges;
 	int32_t requiredRowSolidCounts;
 	int32_t requiredColSolidCounts;
+	int32_t solidGatherWordsVisited;
+	int32_t solidGatherSetBitsVisited;
 	bool success;
 	bool overflow;
 	bool invalidInput;
@@ -641,6 +643,9 @@ typedef struct b2PixelAssetDirtyUpdateResult
 	int32_t dirtyRowCountsCopied;
 	int32_t dirtyColCountsCopied;
 	int32_t dirtyScratchCellsCleared;
+	int32_t dirtyWordDeltaRowsVisited;
+	int32_t dirtyWordDeltaWordsVisited;
+	int32_t dirtyWordDeltaBitsVisited;
 	int32_t featureCellsReclassified;
 	int32_t featureRefsRemoved;
 	int32_t featureRefsAdded;

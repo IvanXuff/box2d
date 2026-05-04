@@ -11,7 +11,67 @@
 #include <stdlib.h>
 #include <string.h>
 
+#if defined( _MSC_VER )
+#include <intrin.h>
+#endif
+
 static bool b2PixelAsset_GetBit( const b2PixelAsset* asset, int index );
+
+static int32_t b2PopCount64( uint64_t value )
+{
+#if defined( _MSC_VER ) && defined( _M_X64 )
+	return (int32_t)__popcnt64( value );
+#elif defined( __GNUC__ ) || defined( __clang__ )
+	return (int32_t)__builtin_popcountll( value );
+#else
+	int32_t count = 0;
+	while ( value != 0 )
+	{
+		value &= value - UINT64_C( 1 );
+		++count;
+	}
+	return count;
+#endif
+}
+
+static int32_t b2CountTrailingZeros64( uint64_t value )
+{
+	B2_ASSERT( value != 0 );
+#if defined( _MSC_VER ) && defined( _M_X64 )
+	unsigned long index = 0;
+	_BitScanForward64( &index, value );
+	return (int32_t)index;
+#elif defined( __GNUC__ ) || defined( __clang__ )
+	return (int32_t)__builtin_ctzll( value );
+#else
+	int32_t count = 0;
+	while ( ( value & UINT64_C( 1 ) ) == 0 )
+	{
+		value >>= 1;
+		++count;
+	}
+	return count;
+#endif
+}
+
+static uint64_t b2BitMaskRange64( int32_t beginBit, int32_t endBit )
+{
+	B2_ASSERT( 0 <= beginBit && beginBit < endBit && endBit <= 64 );
+	uint64_t lowerMask = beginBit == 0 ? UINT64_MAX : UINT64_MAX << beginBit;
+	uint64_t upperMask = endBit == 64 ? UINT64_MAX : ( UINT64_C( 1 ) << endBit ) - UINT64_C( 1 );
+	return lowerMask & upperMask;
+}
+
+static uint64_t b2PixelAsset_GetMaskedWord( const uint64_t* occupancyBits, int32_t occupancyWordCount, int32_t wordIndex,
+											 uint64_t mask )
+{
+	if ( occupancyBits == NULL || wordIndex < 0 || wordIndex >= occupancyWordCount )
+	{
+		return UINT64_C( 0 );
+	}
+
+	return occupancyBits[wordIndex] & mask;
+}
 
 static bool b2IsPixelAssetUsable( const b2PixelAsset* asset )
 {
@@ -739,33 +799,50 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	}
 	for ( int32_t y = 0; y < config->height; ++y )
 	{
-		for ( int32_t x = 0; x < config->width; ++x )
+		int32_t rowStart = y * config->width;
+		int32_t rowEnd = rowStart + config->width;
+		int32_t firstWord = rowStart >> 6;
+		int32_t lastWord = ( rowEnd - 1 ) >> 6;
+		for ( int32_t wordIndex = firstWord; wordIndex <= lastWord; ++wordIndex )
 		{
-			if ( b2SourceOccupancyCell( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height, x, y ) ==
-				 false )
+			int32_t beginBit = wordIndex == firstWord ? rowStart & 63 : 0;
+			int32_t endBit = wordIndex == lastWord ? ( ( rowEnd - 1 ) & 63 ) + 1 : 64;
+			uint64_t word = b2PixelAsset_GetMaskedWord( sourceOccupancyBits, sourceOccupancyWordCount, wordIndex,
+														b2BitMaskRange64( beginBit, endBit ) );
+			result.solidGatherWordsVisited += 1;
+			if ( word == 0 )
 			{
 				continue;
 			}
 
-			minX = b2MinInt( minX, x );
-			minY = b2MinInt( minY, y );
-			maxX = b2MaxInt( maxX, x );
-			maxY = b2MaxInt( maxY, y );
-			centroidSum.x += ( (float)x + 0.5f ) * config->pixelSize - halfWidth;
-			centroidSum.y += ( (float)y + 0.5f ) * config->pixelSize - halfHeight;
-			momentSumX += x;
-			momentSumY += y;
-			momentSumX2 += (int64_t)x * (int64_t)x;
-			momentSumY2 += (int64_t)y * (int64_t)y;
+			int32_t rowSetBits = b2PopCount64( word );
+			result.solidGatherSetBitsVisited += rowSetBits;
 			if ( buffers != NULL && buffers->rowSolidCounts != NULL && buffers->rowSolidCountCapacity >= config->height )
 			{
-				buffers->rowSolidCounts[y] += 1;
+				buffers->rowSolidCounts[y] += rowSetBits;
 			}
-			if ( buffers != NULL && buffers->colSolidCounts != NULL && buffers->colSolidCountCapacity >= config->width )
+			solidCount += rowSetBits;
+			while ( word != 0 )
 			{
-				buffers->colSolidCounts[x] += 1;
+				int32_t bit = b2CountTrailingZeros64( word );
+				int32_t index = ( wordIndex << 6 ) + bit;
+				int32_t x = index - rowStart;
+				minX = b2MinInt( minX, x );
+				minY = b2MinInt( minY, y );
+				maxX = b2MaxInt( maxX, x );
+				maxY = b2MaxInt( maxY, y );
+				centroidSum.x += ( (float)x + 0.5f ) * config->pixelSize - halfWidth;
+				centroidSum.y += ( (float)y + 0.5f ) * config->pixelSize - halfHeight;
+				momentSumX += x;
+				momentSumY += y;
+				momentSumX2 += (int64_t)x * (int64_t)x;
+				momentSumY2 += (int64_t)y * (int64_t)y;
+				if ( buffers != NULL && buffers->colSolidCounts != NULL && buffers->colSolidCountCapacity >= config->width )
+				{
+					buffers->colSolidCounts[x] += 1;
+				}
+				word &= word - UINT64_C( 1 );
 			}
-			solidCount += 1;
 		}
 	}
 
@@ -781,35 +858,54 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	float rotationalInertia = 0.0f;
 	for ( int32_t y = 0; y < config->height; ++y )
 	{
-		for ( int32_t x = 0; x < config->width; ++x )
+		int32_t rowStart = y * config->width;
+		int32_t rowEnd = rowStart + config->width;
+		int32_t firstWord = rowStart >> 6;
+		int32_t lastWord = ( rowEnd - 1 ) >> 6;
+		for ( int32_t wordIndex = firstWord; wordIndex <= lastWord; ++wordIndex )
 		{
-			if ( b2SourceOccupancyCell( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height, x, y ) ==
-				 false )
+			int32_t beginBit = wordIndex == firstWord ? rowStart & 63 : 0;
+			int32_t endBit = wordIndex == lastWord ? ( ( rowEnd - 1 ) & 63 ) + 1 : 64;
+			uint64_t word = b2PixelAsset_GetMaskedWord( sourceOccupancyBits, sourceOccupancyWordCount, wordIndex,
+														b2BitMaskRange64( beginBit, endBit ) );
+			while ( word != 0 )
 			{
-				continue;
+				int32_t bit = b2CountTrailingZeros64( word );
+				int32_t index = ( wordIndex << 6 ) + bit;
+				int32_t x = index - rowStart;
+				b2Vec2 center = { ( (float)x + 0.5f ) * config->pixelSize - halfWidth,
+								  ( (float)y + 0.5f ) * config->pixelSize - halfHeight };
+				b2Vec2 d = b2Sub( center, centroid );
+				rotationalInertia += pixelArea * b2LengthSquared( d ) + cellInertia;
+				word &= word - UINT64_C( 1 );
 			}
-
-			b2Vec2 center = { ( (float)x + 0.5f ) * config->pixelSize - halfWidth,
-							  ( (float)y + 0.5f ) * config->pixelSize - halfHeight };
-			b2Vec2 d = b2Sub( center, centroid );
-			rotationalInertia += pixelArea * b2LengthSquared( d ) + cellInertia;
 		}
 	}
 
 	for ( int32_t y = 0; y < config->height; ++y )
 	{
-		for ( int32_t x = 0; x < config->width; ++x )
+		int32_t rowStart = y * config->width;
+		int32_t rowEnd = rowStart + config->width;
+		int32_t firstWord = rowStart >> 6;
+		int32_t lastWord = ( rowEnd - 1 ) >> 6;
+		for ( int32_t wordIndex = firstWord; wordIndex <= lastWord; ++wordIndex )
 		{
-			if ( b2SourceOccupancyCell( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height, x, y ) ==
-				 false )
+			int32_t beginBit = wordIndex == firstWord ? rowStart & 63 : 0;
+			int32_t endBit = wordIndex == lastWord ? ( ( rowEnd - 1 ) & 63 ) + 1 : 64;
+			uint64_t word = b2PixelAsset_GetMaskedWord( sourceOccupancyBits, sourceOccupancyWordCount, wordIndex,
+														b2BitMaskRange64( beginBit, endBit ) );
+			while ( word != 0 )
 			{
-				continue;
+				int32_t bit = b2CountTrailingZeros64( word );
+				int32_t index = ( wordIndex << 6 ) + bit;
+				int32_t x = index - rowStart;
+				uint8_t type = b2ClassifyPixelFeature( sourceOccupancyBits, sourceOccupancyWordCount, config->width,
+														config->height, x, y, minX, minY, maxX, maxY,
+														config->supportCornerInterval );
+				result.requiredCorners += type == b2_pixelFeatureCorner ? 1 : 0;
+				result.requiredEdges += type == b2_pixelFeatureEdge ? 1 : 0;
+				word &= word - UINT64_C( 1 );
 			}
-
-			uint8_t type = b2ClassifyPixelFeature( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height,
-													x, y, minX, minY, maxX, maxY, config->supportCornerInterval );
-			result.requiredCorners += type == b2_pixelFeatureCorner ? 1 : 0;
-			result.requiredEdges += type == b2_pixelFeatureEdge ? 1 : 0;
 		}
 	}
 
@@ -850,33 +946,43 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	int32_t edgeCount = 0;
 	for ( int32_t y = 0; y < config->height; ++y )
 	{
-		for ( int32_t x = 0; x < config->width; ++x )
+		int32_t rowStart = y * config->width;
+		int32_t rowEnd = rowStart + config->width;
+		int32_t firstWord = rowStart >> 6;
+		int32_t lastWord = ( rowEnd - 1 ) >> 6;
+		for ( int32_t wordIndex = firstWord; wordIndex <= lastWord; ++wordIndex )
 		{
-			if ( b2SourceOccupancyCell( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height, x, y ) ==
-				 false )
+			int32_t beginBit = wordIndex == firstWord ? rowStart & 63 : 0;
+			int32_t endBit = wordIndex == lastWord ? ( ( rowEnd - 1 ) & 63 ) + 1 : 64;
+			uint64_t word = b2PixelAsset_GetMaskedWord( sourceOccupancyBits, sourceOccupancyWordCount, wordIndex,
+														b2BitMaskRange64( beginBit, endBit ) );
+			while ( word != 0 )
 			{
-				continue;
-			}
+				int32_t bit = b2CountTrailingZeros64( word );
+				int32_t index = ( wordIndex << 6 ) + bit;
+				int32_t x = index - rowStart;
 
-			uint8_t type = b2ClassifyPixelFeature( sourceOccupancyBits, sourceOccupancyWordCount, config->width, config->height,
-													x, y, minX, minY, maxX, maxY, config->supportCornerInterval );
-			int32_t index = y * config->width + x;
-			buffers->featureTypes[index] = type;
+				uint8_t type = b2ClassifyPixelFeature( sourceOccupancyBits, sourceOccupancyWordCount, config->width,
+														config->height, x, y, minX, minY, maxX, maxY,
+														config->supportCornerInterval );
+				buffers->featureTypes[index] = type;
 
-			b2PixelFeatureRef feature = { 0 };
-			feature.x = (int16_t)x;
-			feature.y = (int16_t)y;
-			feature.id = (uint16_t)( index + 1 );
-			feature.type = type;
-			feature.normalIndex = 0;
+				b2PixelFeatureRef feature = { 0 };
+				feature.x = (int16_t)x;
+				feature.y = (int16_t)y;
+				feature.id = (uint16_t)( index + 1 );
+				feature.type = type;
+				feature.normalIndex = 0;
 
-			if ( type == b2_pixelFeatureCorner )
-			{
-				buffers->corners[cornerCount++] = feature;
-			}
-			else if ( type == b2_pixelFeatureEdge )
-			{
-				buffers->edges[edgeCount++] = feature;
+				if ( type == b2_pixelFeatureCorner )
+				{
+					buffers->corners[cornerCount++] = feature;
+				}
+				else if ( type == b2_pixelFeatureEdge )
+				{
+					buffers->edges[edgeCount++] = feature;
+				}
+				word &= word - UINT64_C( 1 );
 			}
 		}
 	}
@@ -950,6 +1056,11 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 		result.invalidInput = true;
 		return result;
 	}
+	if ( previousAsset->occupancyWordCount < result.requiredOccupancyWords )
+	{
+		result.invalidInput = true;
+		return result;
+	}
 
 	int32_t dirtyMinX = b2ClampInt( config->dirtyX, 0, config->width );
 	int32_t dirtyMinY = b2ClampInt( config->dirtyY, 0, config->height );
@@ -997,28 +1108,77 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 	int64_t momentSumX2 = previousAsset->momentSumX2;
 	int64_t momentSumY2 = previousAsset->momentSumY2;
 
-	for ( int32_t y = dirtyMinY; y < dirtyMaxY; ++y )
+	int32_t dirtyWidth = dirtyMaxX - dirtyMinX;
+	bool useWordDeltaPath = dirtyWidth >= 64;
+	if ( useWordDeltaPath )
 	{
-		for ( int32_t x = dirtyMinX; x < dirtyMaxX; ++x )
+		for ( int32_t y = dirtyMinY; y < dirtyMaxY; ++y )
 		{
-			int32_t index = y * config->width + x;
-			bool wasOccupied = b2SourceOccupancyBit( previousAsset->occupancyBits, previousAsset->occupancyWordCount, index );
-			bool isOccupied = b2SourceOccupancyBit( updatedOccupancyBits, updatedOccupancyWordCount, index );
-			b2PixelAsset_SetBit( buffers->occupancyBits, result.requiredOccupancyWords, index, isOccupied );
-			result.dirtyCellsScanned += 1;
-			if ( wasOccupied == isOccupied )
+			int32_t rowStart = y * config->width;
+			int32_t spanStart = rowStart + dirtyMinX;
+			int32_t spanEnd = rowStart + dirtyMaxX;
+			int32_t firstWord = spanStart >> 6;
+			int32_t lastWord = ( spanEnd - 1 ) >> 6;
+			result.dirtyWordDeltaRowsVisited += 1;
+			result.dirtyCellsScanned += dirtyWidth;
+			for ( int32_t wordIndex = firstWord; wordIndex <= lastWord; ++wordIndex )
 			{
-				continue;
-			}
+				int32_t beginBit = wordIndex == firstWord ? spanStart & 63 : 0;
+				int32_t endBit = wordIndex == lastWord ? ( ( spanEnd - 1 ) & 63 ) + 1 : 64;
+				uint64_t mask = b2BitMaskRange64( beginBit, endBit );
+				uint64_t oldWord =
+					b2PixelAsset_GetMaskedWord( previousAsset->occupancyBits, previousAsset->occupancyWordCount, wordIndex, mask );
+				uint64_t newWord = b2PixelAsset_GetMaskedWord( updatedOccupancyBits, updatedOccupancyWordCount, wordIndex, mask );
+				buffers->occupancyBits[wordIndex] = ( buffers->occupancyBits[wordIndex] & ~mask ) | newWord;
+				result.dirtyWordDeltaWordsVisited += 1;
 
-			int32_t delta = isOccupied ? 1 : -1;
-			buffers->rowSolidCounts[y] += delta;
-			buffers->colSolidCounts[x] += delta;
-			solidCount += delta;
-			momentSumX += (int64_t)delta * (int64_t)x;
-			momentSumY += (int64_t)delta * (int64_t)y;
-			momentSumX2 += (int64_t)delta * (int64_t)x * (int64_t)x;
-			momentSumY2 += (int64_t)delta * (int64_t)y * (int64_t)y;
+				int32_t rowDelta = b2PopCount64( newWord ) - b2PopCount64( oldWord );
+				buffers->rowSolidCounts[y] += rowDelta;
+				solidCount += rowDelta;
+
+				uint64_t changedWord = oldWord ^ newWord;
+				while ( changedWord != 0 )
+				{
+					int32_t bit = b2CountTrailingZeros64( changedWord );
+					int32_t index = ( wordIndex << 6 ) + bit;
+					int32_t x = index - rowStart;
+					int32_t delta = ( newWord & ( UINT64_C( 1 ) << bit ) ) != 0 ? 1 : -1;
+					buffers->colSolidCounts[x] += delta;
+					momentSumX += (int64_t)delta * (int64_t)x;
+					momentSumY += (int64_t)delta * (int64_t)y;
+					momentSumX2 += (int64_t)delta * (int64_t)x * (int64_t)x;
+					momentSumY2 += (int64_t)delta * (int64_t)y * (int64_t)y;
+					result.dirtyWordDeltaBitsVisited += 1;
+					changedWord &= changedWord - UINT64_C( 1 );
+				}
+			}
+		}
+	}
+	else
+	{
+		for ( int32_t y = dirtyMinY; y < dirtyMaxY; ++y )
+		{
+			for ( int32_t x = dirtyMinX; x < dirtyMaxX; ++x )
+			{
+				int32_t index = y * config->width + x;
+				bool wasOccupied = b2SourceOccupancyBit( previousAsset->occupancyBits, previousAsset->occupancyWordCount, index );
+				bool isOccupied = b2SourceOccupancyBit( updatedOccupancyBits, updatedOccupancyWordCount, index );
+				b2PixelAsset_SetBit( buffers->occupancyBits, result.requiredOccupancyWords, index, isOccupied );
+				result.dirtyCellsScanned += 1;
+				if ( wasOccupied == isOccupied )
+				{
+					continue;
+				}
+
+				int32_t delta = isOccupied ? 1 : -1;
+				buffers->rowSolidCounts[y] += delta;
+				buffers->colSolidCounts[x] += delta;
+				solidCount += delta;
+				momentSumX += (int64_t)delta * (int64_t)x;
+				momentSumY += (int64_t)delta * (int64_t)y;
+				momentSumX2 += (int64_t)delta * (int64_t)x * (int64_t)x;
+				momentSumY2 += (int64_t)delta * (int64_t)y * (int64_t)y;
+			}
 		}
 	}
 
