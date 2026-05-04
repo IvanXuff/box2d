@@ -594,6 +594,7 @@ typedef struct b2PixelAssetBuildResult
 /// @ingroup shape
 typedef struct b2PixelNarrowphaseStats
 {
+	int32_t sourceFeatureIterations;
 	int32_t sourceFeatures;
 	int32_t cellVisits;
 	int32_t diskTests;

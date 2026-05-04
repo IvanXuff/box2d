@@ -895,6 +895,116 @@ float b2GetPixelShapeMaxExtent( const b2PixelShape* shape, b2Vec2 localCenter )
 	return sqrtf( maxDistanceSqr ) + radius;
 }
 
+static int b2PixelShape_CellFromAABBBound( float bound, float pixelSize, float halfCellCount, float cellOffset )
+{
+	float cell = bound / pixelSize + halfCellCount + cellOffset;
+	return (int)floorf( cell + 1.0e-4f );
+}
+
+static void b2PixelShape_GetOccupiedCellBounds( const b2PixelAsset* asset, int* minX, int* maxX, int* minY, int* maxY )
+{
+	float halfWidth = 0.5f * (float)asset->width;
+	float halfHeight = 0.5f * (float)asset->height;
+	*minX = b2ClampInt( b2PixelShape_CellFromAABBBound( asset->occupiedAABB.lowerBound.x, asset->pixelSize, halfWidth, 0.0f ), 0,
+						asset->width - 1 );
+	*maxX = b2ClampInt( b2PixelShape_CellFromAABBBound( asset->occupiedAABB.upperBound.x, asset->pixelSize, halfWidth, -1.0f ), 0,
+						asset->width - 1 );
+	*minY = b2ClampInt( b2PixelShape_CellFromAABBBound( asset->occupiedAABB.lowerBound.y, asset->pixelSize, halfHeight, 0.0f ), 0,
+						asset->height - 1 );
+	*maxY = b2ClampInt( b2PixelShape_CellFromAABBBound( asset->occupiedAABB.upperBound.y, asset->pixelSize, halfHeight, -1.0f ), 0,
+						asset->height - 1 );
+
+	if ( *minX > *maxX || *minY > *maxY )
+	{
+		*minX = 0;
+		*maxX = asset->width - 1;
+		*minY = 0;
+		*maxY = asset->height - 1;
+	}
+}
+
+static float b2PixelShape_DistanceToCellIntervalSqr( float coordinate, int lower, int upper )
+{
+	if ( lower > upper )
+	{
+		return FLT_MAX;
+	}
+
+	if ( coordinate < (float)lower )
+	{
+		float d = (float)lower - coordinate;
+		return d * d;
+	}
+
+	if ( coordinate > (float)upper )
+	{
+		float d = coordinate - (float)upper;
+		return d * d;
+	}
+
+	return 0.0f;
+}
+
+static float b2PixelShape_DistanceToCellRectSqr( float gx, float gy, int minX, int maxX, int minY, int maxY )
+{
+	float dxSqr = b2PixelShape_DistanceToCellIntervalSqr( gx, minX, maxX );
+	float dySqr = b2PixelShape_DistanceToCellIntervalSqr( gy, minY, maxY );
+	if ( dxSqr == FLT_MAX || dySqr == FLT_MAX )
+	{
+		return FLT_MAX;
+	}
+
+	return dxSqr + dySqr;
+}
+
+static float b2PixelShape_OutsideRingLowerBoundSqr( float gx, float gy, int baseX, int baseY, int ring, int minX, int maxX,
+													int minY, int maxY, float pixelSize )
+{
+	int left = baseX - ring;
+	int right = baseX + ring;
+	int top = baseY - ring;
+	int bottom = baseY + ring;
+
+	float lowerBound = FLT_MAX;
+	if ( minX < left )
+	{
+		lowerBound = b2MinFloat( lowerBound, b2PixelShape_DistanceToCellRectSqr( gx, gy, minX, left - 1, minY, maxY ) );
+	}
+	if ( right < maxX )
+	{
+		lowerBound = b2MinFloat( lowerBound, b2PixelShape_DistanceToCellRectSqr( gx, gy, right + 1, maxX, minY, maxY ) );
+	}
+	if ( minY < top )
+	{
+		lowerBound = b2MinFloat( lowerBound, b2PixelShape_DistanceToCellRectSqr( gx, gy, minX, maxX, minY, top - 1 ) );
+	}
+	if ( bottom < maxY )
+	{
+		lowerBound = b2MinFloat( lowerBound, b2PixelShape_DistanceToCellRectSqr( gx, gy, minX, maxX, bottom + 1, maxY ) );
+	}
+
+	return lowerBound == FLT_MAX ? FLT_MAX : lowerBound * pixelSize * pixelSize;
+}
+
+static void b2PixelShape_TryClosestCell( const b2PixelAsset* asset, int x, int y, float gx, float gy, float* bestDistanceSqr,
+										 int* bestIndex )
+{
+	int index = y * asset->width + x;
+	if ( b2PixelAsset_GetBit( asset, index ) == false )
+	{
+		return;
+	}
+
+	float dx = ( (float)x - gx ) * asset->pixelSize;
+	float dy = ( (float)y - gy ) * asset->pixelSize;
+	float distanceSqr = dx * dx + dy * dy;
+	if ( distanceSqr < *bestDistanceSqr || ( distanceSqr == *bestDistanceSqr && index < *bestIndex ) )
+	{
+		*bestDistanceSqr = distanceSqr;
+		*bestIndex = index;
+	}
+}
+
 b2Vec2 b2GetPixelShapeClosestPoint( const b2PixelShape* shape, b2Transform transform, b2Vec2 target )
 {
 	const b2PixelAsset* asset = shape == NULL ? NULL : shape->asset;
@@ -908,27 +1018,68 @@ b2Vec2 b2GetPixelShapeClosestPoint( const b2PixelShape* shape, b2Transform trans
 		return target;
 	}
 
-	// Query helper only. This scans occupied cells and must not be used by PixelShape contact generation.
-	b2Vec2 best = target;
-	float bestDistanceSqr = FLT_MAX;
-	for ( int y = 0; y < asset->height; ++y )
-	{
-		for ( int x = 0; x < asset->width; ++x )
-		{
-			if ( b2PixelAsset_IsOccupied( asset, x, y ) == false )
-			{
-				continue;
-			}
+	b2Vec2 localTarget = b2InvTransformPoint( transform, target );
+	float halfWidth = 0.5f * (float)asset->width;
+	float halfHeight = 0.5f * (float)asset->height;
+	float gx = ( localTarget.x - shape->localOrigin.x ) / asset->pixelSize + halfWidth - 0.5f;
+	float gy = ( localTarget.y - shape->localOrigin.y ) / asset->pixelSize + halfHeight - 0.5f;
 
-			b2Vec2 worldCenter = b2TransformPoint( transform, b2PixelShape_GetPixelCenter( shape, x, y ) );
-			float distanceSqr = b2LengthSquared( b2Sub( worldCenter, target ) );
-			if ( distanceSqr < bestDistanceSqr )
+	int minX = 0;
+	int maxX = asset->width - 1;
+	int minY = 0;
+	int maxY = asset->height - 1;
+	b2PixelShape_GetOccupiedCellBounds( asset, &minX, &maxX, &minY, &maxY );
+
+	int baseX = b2ClampInt( (int)floorf( gx + 0.5f ), minX, maxX );
+	int baseY = b2ClampInt( (int)floorf( gy + 0.5f ), minY, maxY );
+	int maxRing = b2MaxInt( b2MaxInt( baseX - minX, maxX - baseX ), b2MaxInt( baseY - minY, maxY - baseY ) );
+
+	float bestDistanceSqr = FLT_MAX;
+	int bestIndex = INT32_MAX;
+	for ( int ring = 0; ring <= maxRing; ++ring )
+	{
+		int y0 = b2MaxInt( minY, baseY - ring );
+		int y1 = b2MinInt( maxY, baseY + ring );
+		int x0 = b2MaxInt( minX, baseX - ring );
+		int x1 = b2MinInt( maxX, baseX + ring );
+
+		for ( int y = y0; y <= y1; ++y )
+		{
+			if ( y == baseY - ring || y == baseY + ring )
 			{
-				bestDistanceSqr = distanceSqr;
-				best = worldCenter;
+				for ( int x = x0; x <= x1; ++x )
+				{
+					b2PixelShape_TryClosestCell( asset, x, y, gx, gy, &bestDistanceSqr, &bestIndex );
+				}
+			}
+			else
+			{
+				if ( baseX - ring >= minX )
+				{
+					b2PixelShape_TryClosestCell( asset, baseX - ring, y, gx, gy, &bestDistanceSqr, &bestIndex );
+				}
+				if ( ring > 0 && baseX + ring <= maxX )
+				{
+					b2PixelShape_TryClosestCell( asset, baseX + ring, y, gx, gy, &bestDistanceSqr, &bestIndex );
+				}
+			}
+		}
+
+		if ( bestIndex != INT32_MAX )
+		{
+			float outsideLowerBoundSqr =
+				b2PixelShape_OutsideRingLowerBoundSqr( gx, gy, baseX, baseY, ring, minX, maxX, minY, maxY, asset->pixelSize );
+			if ( outsideLowerBoundSqr > bestDistanceSqr )
+			{
+				break;
 			}
 		}
 	}
 
-	return best;
+	if ( bestIndex == INT32_MAX )
+	{
+		return target;
+	}
+
+	return b2TransformPoint( transform, b2PixelShape_GetPixelCenter( shape, bestIndex % asset->width, bestIndex / asset->width ) );
 }

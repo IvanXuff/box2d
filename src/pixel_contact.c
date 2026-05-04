@@ -7,6 +7,7 @@
 #include "pixel_shape.h"
 
 #include "box2d/box2d.h"
+#include "box2d/constants.h"
 
 #include <float.h>
 #include <math.h>
@@ -36,6 +37,7 @@ typedef struct b2PixelRawBuffer
 {
 	b2PixelRawContact contacts[b2_maxPixelRawContacts];
 	int count;
+	int sourceFeatureIterations;
 	int sourceFeatures;
 	int cellVisits;
 	int diskTests;
@@ -71,6 +73,7 @@ static void b2PublishPixelStats( const b2PixelRawBuffer* buffer, const b2Manifol
 		return;
 	}
 
+	stats->sourceFeatureIterations = buffer == NULL ? 0 : buffer->sourceFeatureIterations;
 	stats->sourceFeatures = buffer == NULL ? 0 : buffer->sourceFeatures;
 	stats->cellVisits = buffer == NULL ? 0 : buffer->cellVisits;
 	stats->diskTests = buffer == NULL ? 0 : buffer->diskTests;
@@ -102,6 +105,86 @@ static uint16_t b2MakePixelContactId( uint16_t featureIdA, uint16_t featureIdB )
 	x ^= x >> 16;
 	uint16_t id = (uint16_t)( x & 0xffffu );
 	return id == 0 ? 1 : id;
+}
+
+static int b2LowerBoundPixelCornerId( const b2PixelAsset* asset, int first, int last, int featureId )
+{
+	int lo = first;
+	int hi = last;
+	while ( lo < hi )
+	{
+		int mid = lo + ( hi - lo ) / 2;
+		if ( (int)asset->corners[mid].id < featureId )
+		{
+			lo = mid + 1;
+		}
+		else
+		{
+			hi = mid;
+		}
+	}
+
+	return lo;
+}
+
+static bool b2ComputePixelSourceCandidateRange( const b2PixelShape* source, b2Transform xfSource,
+												const b2PixelShape* target, b2Transform xfTarget, int searchCells,
+												int* minX, int* maxX, int* minY, int* maxY )
+{
+	const b2PixelAsset* assetSource = source->asset;
+	const b2PixelAsset* assetTarget = target->asset;
+	float inflate = (float)searchCells * assetTarget->pixelSize;
+	b2AABB targetLocal = assetTarget->occupiedAABB;
+	targetLocal.lowerBound = b2Add( targetLocal.lowerBound, target->localOrigin );
+	targetLocal.upperBound = b2Add( targetLocal.upperBound, target->localOrigin );
+	targetLocal.lowerBound.x -= inflate;
+	targetLocal.lowerBound.y -= inflate;
+	targetLocal.upperBound.x += inflate;
+	targetLocal.upperBound.y += inflate;
+
+	b2Vec2 targetPoints[4] = {
+		{ targetLocal.lowerBound.x, targetLocal.lowerBound.y },
+		{ targetLocal.upperBound.x, targetLocal.lowerBound.y },
+		{ targetLocal.upperBound.x, targetLocal.upperBound.y },
+		{ targetLocal.lowerBound.x, targetLocal.upperBound.y },
+	};
+
+	float sourceLowerX = FLT_MAX;
+	float sourceLowerY = FLT_MAX;
+	float sourceUpperX = -FLT_MAX;
+	float sourceUpperY = -FLT_MAX;
+	for ( int i = 0; i < 4; ++i )
+	{
+		b2Vec2 sourceLocal = b2InvTransformPoint( xfSource, b2TransformPoint( xfTarget, targetPoints[i] ) );
+		sourceLowerX = b2MinFloat( sourceLowerX, sourceLocal.x );
+		sourceLowerY = b2MinFloat( sourceLowerY, sourceLocal.y );
+		sourceUpperX = b2MaxFloat( sourceUpperX, sourceLocal.x );
+		sourceUpperY = b2MaxFloat( sourceUpperY, sourceLocal.y );
+	}
+
+	float sourcePixelSize = assetSource->pixelSize;
+	float sourceHalfWidth = 0.5f * (float)assetSource->width;
+	float sourceHalfHeight = 0.5f * (float)assetSource->height;
+	float slop = b2MaxFloat( B2_LINEAR_SLOP, 1.0e-5f * sourcePixelSize );
+	int candidateMinX = (int)ceilf( ( sourceLowerX - source->localOrigin.x - slop ) / sourcePixelSize + sourceHalfWidth - 0.5f );
+	int candidateMaxX = (int)floorf( ( sourceUpperX - source->localOrigin.x + slop ) / sourcePixelSize + sourceHalfWidth - 0.5f );
+	int candidateMinY = (int)ceilf( ( sourceLowerY - source->localOrigin.y - slop ) / sourcePixelSize + sourceHalfHeight - 0.5f );
+	int candidateMaxY = (int)floorf( ( sourceUpperY - source->localOrigin.y + slop ) / sourcePixelSize + sourceHalfHeight - 0.5f );
+
+	candidateMinX = b2MaxInt( 0, candidateMinX );
+	candidateMaxX = b2MinInt( assetSource->width - 1, candidateMaxX );
+	candidateMinY = b2MaxInt( 0, candidateMinY );
+	candidateMaxY = b2MinInt( assetSource->height - 1, candidateMaxY );
+	if ( candidateMinX > candidateMaxX || candidateMinY > candidateMaxY )
+	{
+		return false;
+	}
+
+	*minX = candidateMinX;
+	*maxX = candidateMaxX;
+	*minY = candidateMinY;
+	*maxY = candidateMaxY;
+	return true;
 }
 
 static bool b2PixelFeatureIdToCell( const b2PixelAsset* asset, uint16_t featureId, int* x, int* y )
@@ -289,62 +372,91 @@ static void b2GatherPixelCornerContacts( const b2PixelShape* source, b2Transform
 		fallbackNormal = (b2Vec2){ 1.0f, 0.0f };
 	}
 
-	for ( int cornerIndex = 0; cornerIndex < assetSource->cornerCount; ++cornerIndex )
+	int sourceMinX = 0;
+	int sourceMaxX = 0;
+	int sourceMinY = 0;
+	int sourceMaxY = 0;
+	if ( b2ComputePixelSourceCandidateRange( source, xfSource, target, xfTarget, searchCells,
+											 &sourceMinX, &sourceMaxX, &sourceMinY, &sourceMaxY ) == false )
 	{
-		const b2PixelFeatureRef* corner = assetSource->corners + cornerIndex;
-		b2Vec2 worldCorner = b2TransformPoint( xfSource, b2PixelShape_GetPixelCenter( source, corner->x, corner->y ) );
-		b2Vec2 targetLocal = b2Sub( b2InvTransformPoint( xfTarget, worldCorner ), target->localOrigin );
-		int centerX = (int)floorf( targetLocal.x / assetTarget->pixelSize + 0.5f * (float)assetTarget->width );
-		int centerY = (int)floorf( targetLocal.y / assetTarget->pixelSize + 0.5f * (float)assetTarget->height );
-		if ( centerX < -searchCells || centerX >= assetTarget->width + searchCells || centerY < -searchCells ||
-			 centerY >= assetTarget->height + searchCells )
+		return;
+	}
+
+	int cornerSearchStart = 0;
+	for ( int sourceY = sourceMinY; sourceY <= sourceMaxY; ++sourceY )
+	{
+		int firstFeatureId = sourceY * assetSource->width + sourceMinX + 1;
+		if ( firstFeatureId > UINT16_MAX )
 		{
-			continue;
+			break;
 		}
 
-		if ( buffer->sourceFeatures >= b2_maxPixelSourceFeatures )
+		int lastFeatureId = sourceY * assetSource->width + sourceMaxX + 1;
+		lastFeatureId = b2MinInt( lastFeatureId, UINT16_MAX );
+		int cornerIndex =
+			b2LowerBoundPixelCornerId( assetSource, cornerSearchStart, assetSource->cornerCount, firstFeatureId );
+		cornerSearchStart = cornerIndex;
+		for ( ; cornerIndex < assetSource->cornerCount && (int)assetSource->corners[cornerIndex].id <= lastFeatureId;
+			  ++cornerIndex )
 		{
-			buffer->sourceFeaturesCapped = true;
-			return;
-		}
-
-		buffer->sourceFeatures += 1;
-		int minX = b2MaxInt( 0, centerX - searchCells );
-		int maxX = b2MinInt( assetTarget->width - 1, centerX + searchCells );
-		int minY = b2MaxInt( 0, centerY - searchCells );
-		int maxY = b2MinInt( assetTarget->height - 1, centerY + searchCells );
-		for ( int y = minY; y <= maxY; ++y )
-		{
-			for ( int x = minX; x <= maxX; ++x )
+			const b2PixelFeatureRef* corner = assetSource->corners + cornerIndex;
+			buffer->sourceFeatureIterations += 1;
+			b2Vec2 worldCorner = b2TransformPoint( xfSource, b2PixelShape_GetPixelCenter( source, corner->x, corner->y ) );
+			b2Vec2 targetLocal = b2Sub( b2InvTransformPoint( xfTarget, worldCorner ), target->localOrigin );
+			int centerX = (int)floorf( targetLocal.x / assetTarget->pixelSize + 0.5f * (float)assetTarget->width );
+			int centerY = (int)floorf( targetLocal.y / assetTarget->pixelSize + 0.5f * (float)assetTarget->height );
+			if ( centerX < -searchCells || centerX >= assetTarget->width + searchCells || centerY < -searchCells ||
+				 centerY >= assetTarget->height + searchCells )
 			{
-				if ( buffer->cellVisits >= b2_maxPixelCellVisits )
-				{
-					buffer->cellVisitsCapped = true;
-					return;
-				}
+				continue;
+			}
 
-				buffer->cellVisits += 1;
-				if ( buffer->diskTests >= b2_maxPixelDiskTests )
-				{
-					buffer->diskTestsCapped = true;
-					return;
-				}
+			if ( buffer->sourceFeatures >= b2_maxPixelSourceFeatures )
+			{
+				buffer->sourceFeaturesCapped = true;
+				return;
+			}
 
-				uint8_t typeB = b2PixelAsset_GetFeatureType( assetTarget, x, y );
-				if ( typeB == b2_pixelFeatureEmpty || typeB == b2_pixelFeatureInternal )
+			buffer->sourceFeatures += 1;
+			int minX = b2MaxInt( 0, centerX - searchCells );
+			int maxX = b2MinInt( assetTarget->width - 1, centerX + searchCells );
+			int minY = b2MaxInt( 0, centerY - searchCells );
+			int maxY = b2MinInt( assetTarget->height - 1, centerY + searchCells );
+			for ( int y = minY; y <= maxY; ++y )
+			{
+				for ( int x = minX; x <= maxX; ++x )
 				{
-					continue;
-				}
+					if ( buffer->cellVisits >= b2_maxPixelCellVisits )
+					{
+						buffer->cellVisitsCapped = true;
+						return;
+					}
 
-				buffer->diskTests += 1;
-				b2PixelRawContact contact;
-				if ( b2DiskTestPixelFeatures( source, xfSource, corner, target, xfTarget, x, y, typeB,
-											   reverseToOriginalOrder, fallbackNormal, &contact ) )
-				{
-					b2PushPixelRawContact( buffer, contact );
+					buffer->cellVisits += 1;
+					if ( buffer->diskTests >= b2_maxPixelDiskTests )
+					{
+						buffer->diskTestsCapped = true;
+						return;
+					}
+
+					uint8_t typeB = b2PixelAsset_GetFeatureType( assetTarget, x, y );
+					if ( typeB == b2_pixelFeatureEmpty || typeB == b2_pixelFeatureInternal )
+					{
+						continue;
+					}
+
+					buffer->diskTests += 1;
+					b2PixelRawContact contact;
+					if ( b2DiskTestPixelFeatures( source, xfSource, corner, target, xfTarget, x, y, typeB,
+												   reverseToOriginalOrder, fallbackNormal, &contact ) )
+					{
+						b2PushPixelRawContact( buffer, contact );
+					}
 				}
 			}
 		}
+
+		cornerSearchStart = cornerIndex;
 	}
 }
 
@@ -414,6 +526,7 @@ static void b2GatherPixelEmbeddedContacts( const b2PixelShape* source, b2Transfo
 	for ( int cornerIndex = 0; cornerIndex < assetSource->cornerCount; ++cornerIndex )
 	{
 		const b2PixelFeatureRef* corner = assetSource->corners + cornerIndex;
+		buffer->sourceFeatureIterations += 1;
 		b2Vec2 worldCorner = b2TransformPoint( xfSource, b2PixelShape_GetPixelCenter( source, corner->x, corner->y ) );
 		b2Vec2 targetLocal = b2Sub( b2InvTransformPoint( xfTarget, worldCorner ), target->localOrigin );
 		int centerX = (int)floorf( targetLocal.x / assetTarget->pixelSize + 0.5f * (float)assetTarget->width );
