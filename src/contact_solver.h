@@ -17,6 +17,10 @@ typedef struct b2ContactConstraintPoint
 	float totalNormalImpulse;
 	float normalMass;
 	float tangentMass;
+	float yieldImpulse;
+	float requiredNormalImpulse;
+	float unresolvedNormalImpulse;
+	bool yielded;
 } b2ContactConstraintPoint;
 
 typedef struct b2ContactConstraint

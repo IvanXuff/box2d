@@ -8,9 +8,64 @@
 #include "contact.h"
 #include "core.h"
 #include "physics_world.h"
+#include "shape.h"
 #include "solver_set.h"
 
+#include <float.h>
 #include <stddef.h>
+
+static const b2FractureShapeContactData* b2GetFractureShapeContactData( const b2Shape* shape )
+{
+	if ( shape == NULL || shape->userData == NULL )
+	{
+		return NULL;
+	}
+
+	const b2FractureShapeContactData* data = (const b2FractureShapeContactData*)shape->userData;
+	return data->magic == B2_FRACTURE_SHAPE_CONTACT_DATA_MAGIC ? data : NULL;
+}
+
+static float b2GetFractureSideYieldImpulse( const b2FractureShapeContactData* data )
+{
+	if ( data == NULL || ( data->flags & B2_FRACTURE_SHAPE_DESTRUCTIBLE ) == 0 )
+	{
+		return FLT_MAX;
+	}
+
+	float cap = data->yieldImpulse > 0.0f ? data->yieldImpulse : data->contactCapacity;
+	return cap > 0.0f ? cap : FLT_MAX;
+}
+
+static float b2ComputeFractureContactYieldImpulse( b2World* world, const b2ContactSim* contactSim )
+{
+	if ( world == NULL || contactSim == NULL )
+	{
+		return FLT_MAX;
+	}
+
+	const b2Shape* shapeA = b2ShapeArray_Get( &world->shapes, contactSim->shapeIdA );
+	const b2Shape* shapeB = b2ShapeArray_Get( &world->shapes, contactSim->shapeIdB );
+	const b2FractureShapeContactData* dataA = b2GetFractureShapeContactData( shapeA );
+	const b2FractureShapeContactData* dataB = b2GetFractureShapeContactData( shapeB );
+	const bool breakableA = dataA != NULL && ( dataA->flags & B2_FRACTURE_SHAPE_DESTRUCTIBLE ) != 0;
+	const bool breakableB = dataB != NULL && ( dataB->flags & B2_FRACTURE_SHAPE_DESTRUCTIBLE ) != 0;
+	if ( breakableA == false && breakableB == false )
+	{
+		return FLT_MAX;
+	}
+
+	return b2MinFloat( b2GetFractureSideYieldImpulse( dataA ), b2GetFractureSideYieldImpulse( dataB ) );
+}
+
+static void b2RecordFractureYield( b2ContactConstraintPoint* cp, float requestedImpulse, float clampedImpulse )
+{
+	cp->requiredNormalImpulse = b2MaxFloat( cp->requiredNormalImpulse, requestedImpulse );
+	if ( requestedImpulse > cp->yieldImpulse )
+	{
+		cp->yielded = true;
+		cp->unresolvedNormalImpulse = b2MaxFloat( cp->unresolvedNormalImpulse, requestedImpulse - clampedImpulse );
+	}
+}
 
 // contact separation for sub-stepping
 // s = s0 + dot(cB + rB - cA - rA, normal)
@@ -49,6 +104,7 @@ void b2PrepareOverflowContacts( b2StepContext* context )
 
 		const b2Manifold* manifold = &contactSim->manifold;
 		int pointCount = manifold->pointCount;
+		const float contactYieldImpulse = b2ComputeFractureContactYieldImpulse( world, contactSim );
 
 		B2_ASSERT( 0 < pointCount && pointCount <= 2 );
 
@@ -128,9 +184,13 @@ void b2PrepareOverflowContacts( b2StepContext* context )
 			const b2ManifoldPoint* mp = manifold->points + j;
 			b2ContactConstraintPoint* cp = constraint->points + j;
 
-			cp->normalImpulse = warmStartScale * mp->normalImpulse;
+			cp->yieldImpulse = contactYieldImpulse;
+			cp->normalImpulse = b2MinFloat( warmStartScale * mp->normalImpulse, cp->yieldImpulse );
 			cp->tangentImpulse = warmStartScale * mp->tangentImpulse;
 			cp->totalNormalImpulse = 0.0f;
+			cp->requiredNormalImpulse = cp->normalImpulse;
+			cp->unresolvedNormalImpulse = 0.0f;
+			cp->yielded = false;
 
 			b2Vec2 rA = mp->anchorA;
 			b2Vec2 rB = mp->anchorB;
@@ -323,7 +383,9 @@ void b2SolveOverflowContacts( b2StepContext* context, bool useBias )
 			float impulse = -cp->normalMass * ( massScale * vn + velocityBias ) - impulseScale * cp->normalImpulse;
 
 			// clamp the accumulated impulse
-			float newImpulse = b2MaxFloat( cp->normalImpulse + impulse, 0.0f );
+			float requestedImpulse = b2MaxFloat( cp->normalImpulse + impulse, 0.0f );
+			float newImpulse = b2MinFloat( requestedImpulse, cp->yieldImpulse );
+			b2RecordFractureYield( cp, requestedImpulse, newImpulse );
 			impulse = newImpulse - cp->normalImpulse;
 			cp->normalImpulse = newImpulse;
 			cp->totalNormalImpulse += impulse;
@@ -480,7 +542,9 @@ void b2ApplyOverflowRestitution( b2StepContext* context )
 
 				// clamp the accumulated impulse
 				// todo should this be stored?
-				float newImpulse = b2MaxFloat( cp->normalImpulse + impulse, 0.0f );
+				float requestedImpulse = b2MaxFloat( cp->normalImpulse + impulse, 0.0f );
+				float newImpulse = b2MinFloat( requestedImpulse, cp->yieldImpulse );
+				b2RecordFractureYield( cp, requestedImpulse, newImpulse );
 				impulse = newImpulse - cp->normalImpulse;
 				cp->normalImpulse = newImpulse;
 				cp->totalNormalImpulse += impulse;
@@ -533,6 +597,11 @@ void b2StoreOverflowImpulses( b2StepContext* context )
 			manifold->points[j].tangentImpulse = constraint->points[j].tangentImpulse;
 			manifold->points[j].totalNormalImpulse = constraint->points[j].totalNormalImpulse;
 			manifold->points[j].normalVelocity = constraint->points[j].relativeVelocity;
+			manifold->points[j].normalMass = constraint->points[j].normalMass;
+			manifold->points[j].yieldImpulse = constraint->points[j].yieldImpulse;
+			manifold->points[j].requiredNormalImpulse = constraint->points[j].requiredNormalImpulse;
+			manifold->points[j].unresolvedNormalImpulse = constraint->points[j].unresolvedNormalImpulse;
+			manifold->points[j].yielded = constraint->points[j].yielded;
 		}
 
 		manifold->rollingImpulse = constraint->rollingImpulse;
@@ -1086,12 +1155,20 @@ typedef struct b2ContactConstraintWide
 	b2FloatW normalImpulse1;
 	b2FloatW totalNormalImpulse1;
 	b2FloatW tangentImpulse1;
+	b2FloatW yieldImpulse1;
+	b2FloatW requiredNormalImpulse1;
+	b2FloatW unresolvedNormalImpulse1;
+	b2FloatW yielded1;
 	b2Vec2W anchorA2, anchorB2;
 	b2FloatW baseSeparation2;
 	b2FloatW normalImpulse2;
 	b2FloatW totalNormalImpulse2;
 	b2FloatW tangentImpulse2;
 	b2FloatW normalMass2, tangentMass2;
+	b2FloatW yieldImpulse2;
+	b2FloatW requiredNormalImpulse2;
+	b2FloatW unresolvedNormalImpulse2;
+	b2FloatW yielded2;
 	b2FloatW restitution;
 	b2FloatW relativeVelocity1, relativeVelocity2;
 } b2ContactConstraintWide;
@@ -1591,6 +1668,7 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 			if ( contactSim != NULL )
 			{
 				const b2Manifold* manifold = &contactSim->manifold;
+				const float contactYieldImpulse = b2ComputeFractureContactYieldImpulse( world, contactSim );
 
 				int indexA = contactSim->bodySimIndexA;
 				int indexB = contactSim->bodySimIndexB;
@@ -1690,9 +1768,13 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 
 					( (float*)&constraint->baseSeparation1 )[j] = mp->separation - b2Dot( b2Sub( rB, rA ), normal );
 
-					( (float*)&constraint->normalImpulse1 )[j] = warmStartScale * mp->normalImpulse;
+					( (float*)&constraint->yieldImpulse1 )[j] = contactYieldImpulse;
+					( (float*)&constraint->normalImpulse1 )[j] = b2MinFloat( warmStartScale * mp->normalImpulse, contactYieldImpulse );
 					( (float*)&constraint->tangentImpulse1 )[j] = warmStartScale * mp->tangentImpulse;
 					( (float*)&constraint->totalNormalImpulse1 )[j] = 0.0f;
+					( (float*)&constraint->requiredNormalImpulse1 )[j] = ( (float*)&constraint->normalImpulse1 )[j];
+					( (float*)&constraint->unresolvedNormalImpulse1 )[j] = 0.0f;
+					( (float*)&constraint->yielded1 )[j] = 0.0f;
 
 					float rnA = b2Cross( rA, normal );
 					float rnB = b2Cross( rB, normal );
@@ -1727,9 +1809,13 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 
 					( (float*)&constraint->baseSeparation2 )[j] = mp->separation - b2Dot( b2Sub( rB, rA ), normal );
 
-					( (float*)&constraint->normalImpulse2 )[j] = warmStartScale * mp->normalImpulse;
+					( (float*)&constraint->yieldImpulse2 )[j] = contactYieldImpulse;
+					( (float*)&constraint->normalImpulse2 )[j] = b2MinFloat( warmStartScale * mp->normalImpulse, contactYieldImpulse );
 					( (float*)&constraint->tangentImpulse2 )[j] = warmStartScale * mp->tangentImpulse;
 					( (float*)&constraint->totalNormalImpulse2 )[j] = 0.0f;
+					( (float*)&constraint->requiredNormalImpulse2 )[j] = ( (float*)&constraint->normalImpulse2 )[j];
+					( (float*)&constraint->unresolvedNormalImpulse2 )[j] = 0.0f;
+					( (float*)&constraint->yielded2 )[j] = 0.0f;
 
 					float rnA = b2Cross( rA, normal );
 					float rnB = b2Cross( rB, normal );
@@ -1753,6 +1839,10 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 					( (float*)&constraint->normalImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->tangentImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->totalNormalImpulse2 )[j] = 0.0f;
+					( (float*)&constraint->yieldImpulse2 )[j] = FLT_MAX;
+					( (float*)&constraint->requiredNormalImpulse2 )[j] = 0.0f;
+					( (float*)&constraint->unresolvedNormalImpulse2 )[j] = 0.0f;
+					( (float*)&constraint->yielded2 )[j] = 0.0f;
 					( (float*)&constraint->anchorA2.X )[j] = 0.0f;
 					( (float*)&constraint->anchorA2.Y )[j] = 0.0f;
 					( (float*)&constraint->anchorB2.X )[j] = 0.0f;
@@ -1797,6 +1887,10 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 				( (float*)&constraint->totalNormalImpulse1 )[j] = 0.0f;
 				( (float*)&constraint->normalMass1 )[j] = 0.0f;
 				( (float*)&constraint->tangentMass1 )[j] = 0.0f;
+				( (float*)&constraint->yieldImpulse1 )[j] = FLT_MAX;
+				( (float*)&constraint->requiredNormalImpulse1 )[j] = 0.0f;
+				( (float*)&constraint->unresolvedNormalImpulse1 )[j] = 0.0f;
+				( (float*)&constraint->yielded1 )[j] = 0.0f;
 
 				( (float*)&constraint->anchorA2.X )[j] = 0.0f;
 				( (float*)&constraint->anchorA2.Y )[j] = 0.0f;
@@ -1808,6 +1902,10 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 				( (float*)&constraint->totalNormalImpulse2 )[j] = 0.0f;
 				( (float*)&constraint->normalMass2 )[j] = 0.0f;
 				( (float*)&constraint->tangentMass2 )[j] = 0.0f;
+				( (float*)&constraint->yieldImpulse2 )[j] = FLT_MAX;
+				( (float*)&constraint->requiredNormalImpulse2 )[j] = 0.0f;
+				( (float*)&constraint->unresolvedNormalImpulse2 )[j] = 0.0f;
+				( (float*)&constraint->yielded2 )[j] = 0.0f;
 
 				( (float*)&constraint->restitution )[j] = 0.0f;
 				( (float*)&constraint->relativeVelocity1 )[j] = 0.0f;
@@ -1953,8 +2051,13 @@ void b2SolveContactsTask( int startIndex, int endIndex, b2StepContext* context, 
 			b2FloatW negImpulse = b2AddW( b2MulW( c->normalMass1, b2AddW( b2MulW( pointMassScale, vn ), bias ) ),
 										  b2MulW( pointImpulseScale, c->normalImpulse1 ) );
 
-			// Clamp the accumulated impulse
-			b2FloatW newImpulse = b2MaxW( b2SubW( c->normalImpulse1, negImpulse ), b2ZeroW() );
+			// Clamp the accumulated impulse. Breakable contacts cap the normal impulse at yieldImpulse.
+			b2FloatW requestedImpulse = b2MaxW( b2SubW( c->normalImpulse1, negImpulse ), b2ZeroW() );
+			b2FloatW newImpulse = b2MinW( requestedImpulse, c->yieldImpulse1 );
+			b2FloatW unresolvedImpulse = b2MaxW( b2SubW( requestedImpulse, newImpulse ), b2ZeroW() );
+			c->requiredNormalImpulse1 = b2MaxW( c->requiredNormalImpulse1, requestedImpulse );
+			c->unresolvedNormalImpulse1 = b2MaxW( c->unresolvedNormalImpulse1, unresolvedImpulse );
+			c->yielded1 = b2OrW( c->yielded1, b2GreaterThanW( requestedImpulse, c->yieldImpulse1 ) );
 			b2FloatW impulse = b2SubW( newImpulse, c->normalImpulse1 );
 			c->normalImpulse1 = newImpulse;
 			c->totalNormalImpulse1 = b2AddW( c->totalNormalImpulse1, impulse );
@@ -2005,8 +2108,13 @@ void b2SolveContactsTask( int startIndex, int endIndex, b2StepContext* context, 
 			b2FloatW negImpulse = b2AddW( b2MulW( c->normalMass2, b2AddW( b2MulW( pointMassScale, vn ), bias ) ),
 										  b2MulW( pointImpulseScale, c->normalImpulse2 ) );
 
-			// Clamp the accumulated impulse
-			b2FloatW newImpulse = b2MaxW( b2SubW( c->normalImpulse2, negImpulse ), b2ZeroW() );
+			// Clamp the accumulated impulse. Breakable contacts cap the normal impulse at yieldImpulse.
+			b2FloatW requestedImpulse = b2MaxW( b2SubW( c->normalImpulse2, negImpulse ), b2ZeroW() );
+			b2FloatW newImpulse = b2MinW( requestedImpulse, c->yieldImpulse2 );
+			b2FloatW unresolvedImpulse = b2MaxW( b2SubW( requestedImpulse, newImpulse ), b2ZeroW() );
+			c->requiredNormalImpulse2 = b2MaxW( c->requiredNormalImpulse2, requestedImpulse );
+			c->unresolvedNormalImpulse2 = b2MaxW( c->unresolvedNormalImpulse2, unresolvedImpulse );
+			c->yielded2 = b2OrW( c->yielded2, b2GreaterThanW( requestedImpulse, c->yieldImpulse2 ) );
 			b2FloatW impulse = b2SubW( newImpulse, c->normalImpulse2 );
 			c->normalImpulse2 = newImpulse;
 			c->totalNormalImpulse2 = b2AddW( c->totalNormalImpulse2, impulse );
@@ -2168,8 +2276,13 @@ void b2ApplyRestitutionTask( int startIndex, int endIndex, b2StepContext* contex
 			// Compute normal impulse
 			b2FloatW negImpulse = b2MulW( mass, b2AddW( vn, b2MulW( c->restitution, c->relativeVelocity1 ) ) );
 
-			// Clamp the accumulated impulse
-			b2FloatW newImpulse = b2MaxW( b2SubW( c->normalImpulse1, negImpulse ), b2ZeroW() );
+			// Clamp the accumulated impulse. Breakable contacts cap restitution too.
+			b2FloatW requestedImpulse = b2MaxW( b2SubW( c->normalImpulse1, negImpulse ), b2ZeroW() );
+			b2FloatW newImpulse = b2MinW( requestedImpulse, c->yieldImpulse1 );
+			b2FloatW unresolvedImpulse = b2MaxW( b2SubW( requestedImpulse, newImpulse ), b2ZeroW() );
+			c->requiredNormalImpulse1 = b2MaxW( c->requiredNormalImpulse1, requestedImpulse );
+			c->unresolvedNormalImpulse1 = b2MaxW( c->unresolvedNormalImpulse1, unresolvedImpulse );
+			c->yielded1 = b2OrW( c->yielded1, b2GreaterThanW( requestedImpulse, c->yieldImpulse1 ) );
 			b2FloatW deltaImpulse = b2SubW( newImpulse, c->normalImpulse1 );
 			c->normalImpulse1 = newImpulse;
 
@@ -2208,8 +2321,13 @@ void b2ApplyRestitutionTask( int startIndex, int endIndex, b2StepContext* contex
 			// Compute normal impulse
 			b2FloatW negImpulse = b2MulW( mass, b2AddW( vn, b2MulW( c->restitution, c->relativeVelocity2 ) ) );
 
-			// Clamp the accumulated impulse
-			b2FloatW newImpulse = b2MaxW( b2SubW( c->normalImpulse2, negImpulse ), b2ZeroW() );
+			// Clamp the accumulated impulse. Breakable contacts cap restitution too.
+			b2FloatW requestedImpulse = b2MaxW( b2SubW( c->normalImpulse2, negImpulse ), b2ZeroW() );
+			b2FloatW newImpulse = b2MinW( requestedImpulse, c->yieldImpulse2 );
+			b2FloatW unresolvedImpulse = b2MaxW( b2SubW( requestedImpulse, newImpulse ), b2ZeroW() );
+			c->requiredNormalImpulse2 = b2MaxW( c->requiredNormalImpulse2, requestedImpulse );
+			c->unresolvedNormalImpulse2 = b2MaxW( c->unresolvedNormalImpulse2, unresolvedImpulse );
+			c->yielded2 = b2OrW( c->yielded2, b2GreaterThanW( requestedImpulse, c->yieldImpulse2 ) );
 			b2FloatW deltaImpulse = b2SubW( newImpulse, c->normalImpulse2 );
 			c->normalImpulse2 = newImpulse;
 
@@ -2256,6 +2374,16 @@ void b2StoreImpulsesTask( int startIndex, int endIndex, b2StepContext* context )
 		const float* totalNormalImpulse2 = (float*)&c->totalNormalImpulse2;
 		const float* normalVelocity1 = (float*)&c->relativeVelocity1;
 		const float* normalVelocity2 = (float*)&c->relativeVelocity2;
+		const float* normalMass1 = (float*)&c->normalMass1;
+		const float* normalMass2 = (float*)&c->normalMass2;
+		const float* yieldImpulse1 = (float*)&c->yieldImpulse1;
+		const float* yieldImpulse2 = (float*)&c->yieldImpulse2;
+		const float* requiredNormalImpulse1 = (float*)&c->requiredNormalImpulse1;
+		const float* requiredNormalImpulse2 = (float*)&c->requiredNormalImpulse2;
+		const float* unresolvedNormalImpulse1 = (float*)&c->unresolvedNormalImpulse1;
+		const float* unresolvedNormalImpulse2 = (float*)&c->unresolvedNormalImpulse2;
+		const float* yielded1 = (float*)&c->yielded1;
+		const float* yielded2 = (float*)&c->yielded2;
 
 		int baseIndex = B2_SIMD_WIDTH * constraintIndex;
 
@@ -2268,11 +2396,21 @@ void b2StoreImpulsesTask( int startIndex, int endIndex, b2StepContext* context )
 			m->points[0].tangentImpulse = tangentImpulse1[laneIndex];
 			m->points[0].totalNormalImpulse = totalNormalImpulse1[laneIndex];
 			m->points[0].normalVelocity = normalVelocity1[laneIndex];
+			m->points[0].normalMass = normalMass1[laneIndex];
+			m->points[0].yieldImpulse = yieldImpulse1[laneIndex];
+			m->points[0].requiredNormalImpulse = requiredNormalImpulse1[laneIndex];
+			m->points[0].unresolvedNormalImpulse = unresolvedNormalImpulse1[laneIndex];
+			m->points[0].yielded = yielded1[laneIndex] != 0.0f;
 
 			m->points[1].normalImpulse = normalImpulse2[laneIndex];
 			m->points[1].tangentImpulse = tangentImpulse2[laneIndex];
 			m->points[1].totalNormalImpulse = totalNormalImpulse2[laneIndex];
 			m->points[1].normalVelocity = normalVelocity2[laneIndex];
+			m->points[1].normalMass = normalMass2[laneIndex];
+			m->points[1].yieldImpulse = yieldImpulse2[laneIndex];
+			m->points[1].requiredNormalImpulse = requiredNormalImpulse2[laneIndex];
+			m->points[1].unresolvedNormalImpulse = unresolvedNormalImpulse2[laneIndex];
+			m->points[1].yielded = yielded2[laneIndex] != 0.0f;
 		}
 	}
 

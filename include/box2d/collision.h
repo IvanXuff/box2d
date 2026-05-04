@@ -7,6 +7,7 @@
 #include "math_functions.h"
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct b2SimplexCache b2SimplexCache;
 typedef struct b2Hull b2Hull;
@@ -546,12 +547,45 @@ typedef struct b2ManifoldPoint
 	/// zero then there was no hit. Negative means shapes are approaching.
 	float normalVelocity;
 
+	/// Effective normal mass used by the velocity solver for this contact point.
+	float normalMass;
+
+	/// Upper bound for breakable-contact normal impulse. FLT_MAX means rigid contact.
+	float yieldImpulse;
+
+	/// Largest rigid-contact impulse requested by the solver before yield clamping.
+	float requiredNormalImpulse;
+
+	/// Largest normal impulse that could not be applied because the contact yielded.
+	float unresolvedNormalImpulse;
+
 	/// Uniquely identifies a contact point between two shapes
 	uint16_t id;
 
 	/// Did this contact point exist the previous step?
 	bool persisted;
+
+	/// Did this point request more normal impulse than yieldImpulse during the step?
+	bool yielded;
 } b2ManifoldPoint;
+
+#define B2_FRACTURE_SHAPE_CONTACT_DATA_MAGIC 0x41465243u
+#define B2_FRACTURE_SHAPE_DESTRUCTIBLE 0x00000001u
+
+typedef struct b2FractureShapeContactData
+{
+	uint32_t magic;
+	uint32_t flags;
+	int64_t rigidbodyId;
+	int64_t actorId;
+	int32_t materialId;
+	int32_t surfaceClusterId;
+	int32_t surfaceLeafId;
+	float yieldImpulse;
+	float contactCapacity;
+	float hardness;
+	float damageSoftening;
+} b2FractureShapeContactData;
 
 /// A contact manifold describes the contact points between colliding shapes.
 /// @note Box2D uses speculative collision so some contact points may be separated.

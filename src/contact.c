@@ -15,6 +15,7 @@
 // needed for dll export
 #include "box2d/box2d.h"
 
+#include <float.h>
 #include <stddef.h>
 
 B2_ARRAY_SOURCE( b2Contact, b2Contact )
@@ -634,6 +635,11 @@ bool b2UpdateContact( b2World* world, b2ContactSim* contactSim, b2Shape* shapeA,
 		mp2->tangentImpulse = 0.0f;
 		mp2->totalNormalImpulse = 0.0f;
 		mp2->normalVelocity = 0.0f;
+		mp2->normalMass = 0.0f;
+		mp2->yieldImpulse = FLT_MAX;
+		mp2->requiredNormalImpulse = 0.0f;
+		mp2->unresolvedNormalImpulse = 0.0f;
+		mp2->yielded = false;
 		mp2->persisted = false;
 
 		uint16_t id2 = mp2->id;
