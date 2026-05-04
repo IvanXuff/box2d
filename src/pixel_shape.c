@@ -8,6 +8,8 @@
 #include <float.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 
 static bool b2PixelAsset_GetBit( const b2PixelAsset* asset, int index );
 
@@ -498,6 +500,182 @@ static uint8_t b2ClassifyPixelFeature( const uint64_t* occupancyBits, int32_t oc
 	return convexCorner || concaveCorner || supportCorner ? b2_pixelFeatureCorner : b2_pixelFeatureEdge;
 }
 
+static int b2ComparePixelFeatureRefById( const void* a, const void* b )
+{
+	const b2PixelFeatureRef* left = (const b2PixelFeatureRef*)a;
+	const b2PixelFeatureRef* right = (const b2PixelFeatureRef*)b;
+	if ( left->id < right->id )
+	{
+		return -1;
+	}
+	if ( left->id > right->id )
+	{
+		return 1;
+	}
+	return 0;
+}
+
+static void b2PixelAsset_SetBit( uint64_t* occupancyBits, int32_t occupancyWordCount, int32_t index, bool occupied )
+{
+	int32_t wordIndex = index >> 6;
+	if ( occupancyBits == NULL || wordIndex < 0 || wordIndex >= occupancyWordCount )
+	{
+		return;
+	}
+
+	uint64_t mask = UINT64_C( 1 ) << ( index & 63 );
+	if ( occupied )
+	{
+		occupancyBits[wordIndex] |= mask;
+	}
+	else
+	{
+		occupancyBits[wordIndex] &= ~mask;
+	}
+}
+
+static b2Vec2 b2PixelAsset_ComputeCentroidFromMoments( int32_t width, int32_t height, float pixelSize, int32_t solidCount,
+													   int64_t momentSumX, int64_t momentSumY )
+{
+	if ( solidCount <= 0 )
+	{
+		return b2Vec2_zero;
+	}
+
+	float halfWidth = 0.5f * (float)width * pixelSize;
+	float halfHeight = 0.5f * (float)height * pixelSize;
+	b2Vec2 centroid = {
+		( (float)momentSumX + 0.5f * (float)solidCount ) * pixelSize / (float)solidCount - halfWidth,
+		( (float)momentSumY + 0.5f * (float)solidCount ) * pixelSize / (float)solidCount - halfHeight,
+	};
+	return centroid;
+}
+
+static float b2PixelAsset_ComputeInertiaFromMoments( int32_t width, int32_t height, float pixelSize, int32_t solidCount,
+													 int64_t momentSumX, int64_t momentSumY, int64_t momentSumX2,
+													 int64_t momentSumY2, b2Vec2 centroid )
+{
+	if ( solidCount <= 0 )
+	{
+		return 0.0f;
+	}
+
+	float halfWidth = 0.5f * (float)width * pixelSize;
+	float halfHeight = 0.5f * (float)height * pixelSize;
+	float solid = (float)solidCount;
+	float pixelSize2 = pixelSize * pixelSize;
+	float sumCellX2 = pixelSize2 * ( (float)momentSumX2 + (float)momentSumX + 0.25f * solid ) -
+					  2.0f * halfWidth * pixelSize * ( (float)momentSumX + 0.5f * solid ) + halfWidth * halfWidth * solid;
+	float sumCellY2 = pixelSize2 * ( (float)momentSumY2 + (float)momentSumY + 0.25f * solid ) -
+					  2.0f * halfHeight * pixelSize * ( (float)momentSumY + 0.5f * solid ) + halfHeight * halfHeight * solid;
+	float pixelArea = pixelSize2;
+	float cellInertia = pixelArea * pixelSize2 / 6.0f;
+	return pixelArea * ( sumCellX2 + sumCellY2 - solid * ( centroid.x * centroid.x + centroid.y * centroid.y ) ) +
+		   solid * cellInertia;
+}
+
+static bool b2PixelAsset_ComputeBoundsFromCounts( const int32_t* rowSolidCounts, int32_t rowSolidCount,
+												  const int32_t* colSolidCounts, int32_t colSolidCount, int32_t* minX,
+												  int32_t* minY, int32_t* maxX, int32_t* maxY )
+{
+	if ( rowSolidCounts == NULL || colSolidCounts == NULL || rowSolidCount <= 0 || colSolidCount <= 0 )
+	{
+		return false;
+	}
+
+	int32_t left = 0;
+	while ( left < colSolidCount && colSolidCounts[left] <= 0 )
+	{
+		++left;
+	}
+	if ( left >= colSolidCount )
+	{
+		return false;
+	}
+
+	int32_t right = colSolidCount - 1;
+	while ( right >= left && colSolidCounts[right] <= 0 )
+	{
+		--right;
+	}
+
+	int32_t top = 0;
+	while ( top < rowSolidCount && rowSolidCounts[top] <= 0 )
+	{
+		++top;
+	}
+
+	int32_t bottom = rowSolidCount - 1;
+	while ( bottom >= top && rowSolidCounts[bottom] <= 0 )
+	{
+		--bottom;
+	}
+
+	*minX = left;
+	*maxX = right;
+	*minY = top;
+	*maxY = bottom;
+	return true;
+}
+
+static void b2PixelAsset_MarkFeatureCell( uint8_t* markers, int32_t index, int32_t* featureCellsReclassified )
+{
+	if ( markers[index] == 0 )
+	{
+		markers[index] = 1;
+		*featureCellsReclassified += 1;
+	}
+}
+
+static bool b2PixelAsset_ReclassifyMarkedCell( const b2PixelAssetDirtyUpdateConfig* config, uint64_t* occupancyBits,
+											   int32_t occupancyWordCount, b2PixelAssetBuildBuffers const* buffers,
+											   int32_t minX, int32_t minY, int32_t maxX, int32_t maxY, int32_t index,
+											   int32_t* cornerCount, int32_t* edgeCount, int32_t* featureRefsAdded )
+{
+	int32_t x = index % config->width;
+	int32_t y = index / config->width;
+	bool occupied = b2SourceOccupancyBit( occupancyBits, occupancyWordCount, index );
+	buffers->normalIndices[index] = 0;
+	if ( occupied == false )
+	{
+		buffers->featureTypes[index] = b2_pixelFeatureEmpty;
+		return true;
+	}
+
+	uint8_t type = b2ClassifyPixelFeature( occupancyBits, occupancyWordCount, config->width, config->height, x, y, minX, minY,
+										   maxX, maxY, config->supportCornerInterval );
+	buffers->featureTypes[index] = type;
+	if ( type != b2_pixelFeatureCorner && type != b2_pixelFeatureEdge )
+	{
+		return true;
+	}
+
+	b2PixelFeatureRef feature = { 0 };
+	feature.x = (int16_t)x;
+	feature.y = (int16_t)y;
+	feature.id = (uint16_t)( index + 1 );
+	feature.type = type;
+	feature.normalIndex = buffers->normalIndices[index];
+	if ( type == b2_pixelFeatureCorner )
+	{
+		if ( *cornerCount >= buffers->cornerCapacity )
+		{
+			return false;
+		}
+		buffers->corners[( *cornerCount )++] = feature;
+	}
+	else
+	{
+		if ( buffers->edges == NULL || *edgeCount >= buffers->edgeCapacity )
+		{
+			return false;
+		}
+		buffers->edges[( *edgeCount )++] = feature;
+	}
+	*featureRefsAdded += 1;
+	return true;
+}
+
 b2PixelAssetBuildConfig b2DefaultPixelAssetBuildConfig( void )
 {
 	b2PixelAssetBuildConfig config = { 0 };
@@ -531,6 +709,8 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	result.requiredOccupancyWords = ( cellCount + 63 ) / 64;
 	result.requiredFeatureTypes = cellCount;
 	result.requiredNormalIndices = cellCount;
+	result.requiredRowSolidCounts = config->height;
+	result.requiredColSolidCounts = config->width;
 	if ( sourceOccupancyWordCount < result.requiredOccupancyWords )
 	{
 		result.invalidInput = true;
@@ -543,8 +723,20 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	int32_t maxY = -1;
 	int32_t solidCount = 0;
 	b2Vec2 centroidSum = b2Vec2_zero;
+	int64_t momentSumX = 0;
+	int64_t momentSumY = 0;
+	int64_t momentSumX2 = 0;
+	int64_t momentSumY2 = 0;
 	float halfWidth = 0.5f * (float)config->width * config->pixelSize;
 	float halfHeight = 0.5f * (float)config->height * config->pixelSize;
+	if ( buffers != NULL && buffers->rowSolidCounts != NULL && buffers->rowSolidCountCapacity >= config->height )
+	{
+		memset( buffers->rowSolidCounts, 0, sizeof( int32_t ) * (size_t)config->height );
+	}
+	if ( buffers != NULL && buffers->colSolidCounts != NULL && buffers->colSolidCountCapacity >= config->width )
+	{
+		memset( buffers->colSolidCounts, 0, sizeof( int32_t ) * (size_t)config->width );
+	}
 	for ( int32_t y = 0; y < config->height; ++y )
 	{
 		for ( int32_t x = 0; x < config->width; ++x )
@@ -561,6 +753,18 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 			maxY = b2MaxInt( maxY, y );
 			centroidSum.x += ( (float)x + 0.5f ) * config->pixelSize - halfWidth;
 			centroidSum.y += ( (float)y + 0.5f ) * config->pixelSize - halfHeight;
+			momentSumX += x;
+			momentSumY += y;
+			momentSumX2 += (int64_t)x * (int64_t)x;
+			momentSumY2 += (int64_t)y * (int64_t)y;
+			if ( buffers != NULL && buffers->rowSolidCounts != NULL && buffers->rowSolidCountCapacity >= config->height )
+			{
+				buffers->rowSolidCounts[y] += 1;
+			}
+			if ( buffers != NULL && buffers->colSolidCounts != NULL && buffers->colSolidCountCapacity >= config->width )
+			{
+				buffers->colSolidCounts[x] += 1;
+			}
 			solidCount += 1;
 		}
 	}
@@ -621,6 +825,8 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 					   buffers->featureTypeCapacity >= result.requiredFeatureTypes &&
 					   buffers->normalIndexCapacity >= result.requiredNormalIndices &&
 					   buffers->cornerCapacity >= result.requiredCorners &&
+					   ( buffers->rowSolidCounts == NULL || buffers->rowSolidCountCapacity >= result.requiredRowSolidCounts ) &&
+					   ( buffers->colSolidCounts == NULL || buffers->colSolidCountCapacity >= result.requiredColSolidCounts ) &&
 					   ( result.requiredEdges == 0 ||
 						 ( buffers->edges != NULL && buffers->edgeCapacity >= result.requiredEdges ) );
 	if ( hasCapacity == false )
@@ -686,6 +892,14 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	result.asset.cornerCount = cornerCount;
 	result.asset.edges = result.requiredEdges > 0 ? buffers->edges : NULL;
 	result.asset.edgeCount = edgeCount;
+	result.asset.rowSolidCounts = buffers->rowSolidCounts;
+	result.asset.rowSolidCount = buffers->rowSolidCounts != NULL ? config->height : 0;
+	result.asset.colSolidCounts = buffers->colSolidCounts;
+	result.asset.colSolidCount = buffers->colSolidCounts != NULL ? config->width : 0;
+	result.asset.momentSumX = momentSumX;
+	result.asset.momentSumY = momentSumY;
+	result.asset.momentSumX2 = momentSumX2;
+	result.asset.momentSumY2 = momentSumY2;
 	result.asset.occupiedAABB.lowerBound =
 		(b2Vec2){ (float)minX * config->pixelSize - halfWidth, (float)minY * config->pixelSize - halfHeight };
 	result.asset.occupiedAABB.upperBound =
@@ -696,6 +910,316 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	result.asset.solidCount = solidCount;
 	result.asset.topologyVersion = config->topologyVersion;
 	result.success = b2ValidatePixelAsset( &result.asset );
+	result.invalidInput = result.success == false;
+	return result;
+}
+
+b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2PixelAssetDirtyUpdateConfig* config,
+																	const b2PixelAsset* previousAsset,
+																	const uint64_t* updatedOccupancyBits,
+																	int32_t updatedOccupancyWordCount,
+																	const b2PixelAssetBuildBuffers* buffers )
+{
+	b2PixelAssetDirtyUpdateResult result = { 0 };
+	if ( config == NULL || previousAsset == NULL || updatedOccupancyBits == NULL || buffers == NULL || config->width <= 0 ||
+		 config->height <= 0 || config->width > INT16_MAX || config->height > INT16_MAX ||
+		 config->width > INT32_MAX / config->height || b2IsValidFloat( config->pixelSize ) == false ||
+		 config->pixelSize <= 0.0f || previousAsset->width != config->width || previousAsset->height != config->height ||
+		 previousAsset->occupancyBits == NULL || previousAsset->featureTypes == NULL || previousAsset->normalIndices == NULL ||
+		 previousAsset->rowSolidCounts == NULL || previousAsset->colSolidCounts == NULL ||
+		 previousAsset->rowSolidCount < config->height || previousAsset->colSolidCount < config->width )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+
+	int32_t cellCount = config->width * config->height;
+	if ( cellCount <= 0 || cellCount >= UINT16_MAX )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+
+	result.requiredOccupancyWords = ( cellCount + 63 ) / 64;
+	result.requiredFeatureTypes = cellCount;
+	result.requiredNormalIndices = cellCount;
+	result.requiredRowSolidCounts = config->height;
+	result.requiredColSolidCounts = config->width;
+	if ( updatedOccupancyWordCount < result.requiredOccupancyWords )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+
+	int32_t dirtyMinX = b2ClampInt( config->dirtyX, 0, config->width );
+	int32_t dirtyMinY = b2ClampInt( config->dirtyY, 0, config->height );
+	int32_t dirtyMaxX = b2ClampInt( config->dirtyX + b2MaxInt( config->dirtyWidth, 0 ), 0, config->width );
+	int32_t dirtyMaxY = b2ClampInt( config->dirtyY + b2MaxInt( config->dirtyHeight, 0 ), 0, config->height );
+	if ( dirtyMaxX <= dirtyMinX || dirtyMaxY <= dirtyMinY )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+
+	bool hasCapacity = buffers->occupancyBits != NULL && buffers->featureTypes != NULL && buffers->normalIndices != NULL &&
+					   buffers->corners != NULL && buffers->rowSolidCounts != NULL && buffers->colSolidCounts != NULL &&
+					   buffers->scratchCells != NULL &&
+					   buffers->occupancyWordCapacity >= result.requiredOccupancyWords &&
+					   buffers->featureTypeCapacity >= result.requiredFeatureTypes &&
+					   buffers->normalIndexCapacity >= result.requiredNormalIndices &&
+					   buffers->cornerCapacity > 0 && buffers->rowSolidCountCapacity >= result.requiredRowSolidCounts &&
+					   buffers->colSolidCountCapacity >= result.requiredColSolidCounts &&
+					   buffers->scratchCellCapacity >= cellCount;
+	if ( hasCapacity == false )
+	{
+		result.overflow = true;
+		return result;
+	}
+
+	memcpy( buffers->occupancyBits, previousAsset->occupancyBits, sizeof( uint64_t ) * (size_t)result.requiredOccupancyWords );
+	memcpy( buffers->featureTypes, previousAsset->featureTypes, sizeof( uint8_t ) * (size_t)cellCount );
+	memcpy( buffers->normalIndices, previousAsset->normalIndices, sizeof( uint8_t ) * (size_t)cellCount );
+	memcpy( buffers->rowSolidCounts, previousAsset->rowSolidCounts, sizeof( int32_t ) * (size_t)config->height );
+	memcpy( buffers->colSolidCounts, previousAsset->colSolidCounts, sizeof( int32_t ) * (size_t)config->width );
+	// Dirty reclassification marks cells in caller-owned scratch memory. Do not reuse normalIndices as marker state;
+	// it is a public asset field and may carry non-zero feature data in a future PixelAsset version.
+	memset( buffers->scratchCells, 0, sizeof( uint8_t ) * (size_t)cellCount );
+	result.dirtyOccupancyWordsCopied = result.requiredOccupancyWords;
+	result.dirtyFeatureCellsCopied = cellCount;
+	result.dirtyNormalCellsCopied = cellCount;
+	result.dirtyRowCountsCopied = config->height;
+	result.dirtyColCountsCopied = config->width;
+	result.dirtyScratchCellsCleared = cellCount;
+
+	int32_t solidCount = previousAsset->solidCount;
+	int64_t momentSumX = previousAsset->momentSumX;
+	int64_t momentSumY = previousAsset->momentSumY;
+	int64_t momentSumX2 = previousAsset->momentSumX2;
+	int64_t momentSumY2 = previousAsset->momentSumY2;
+
+	for ( int32_t y = dirtyMinY; y < dirtyMaxY; ++y )
+	{
+		for ( int32_t x = dirtyMinX; x < dirtyMaxX; ++x )
+		{
+			int32_t index = y * config->width + x;
+			bool wasOccupied = b2SourceOccupancyBit( previousAsset->occupancyBits, previousAsset->occupancyWordCount, index );
+			bool isOccupied = b2SourceOccupancyBit( updatedOccupancyBits, updatedOccupancyWordCount, index );
+			b2PixelAsset_SetBit( buffers->occupancyBits, result.requiredOccupancyWords, index, isOccupied );
+			result.dirtyCellsScanned += 1;
+			if ( wasOccupied == isOccupied )
+			{
+				continue;
+			}
+
+			int32_t delta = isOccupied ? 1 : -1;
+			buffers->rowSolidCounts[y] += delta;
+			buffers->colSolidCounts[x] += delta;
+			solidCount += delta;
+			momentSumX += (int64_t)delta * (int64_t)x;
+			momentSumY += (int64_t)delta * (int64_t)y;
+			momentSumX2 += (int64_t)delta * (int64_t)x * (int64_t)x;
+			momentSumY2 += (int64_t)delta * (int64_t)y * (int64_t)y;
+		}
+	}
+
+	if ( solidCount <= 0 )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+
+	int32_t oldMinX = 0;
+	int32_t oldMinY = 0;
+	int32_t oldMaxX = 0;
+	int32_t oldMaxY = 0;
+	int32_t minX = 0;
+	int32_t minY = 0;
+	int32_t maxX = 0;
+	int32_t maxY = 0;
+	if ( b2PixelAsset_ComputeBoundsFromCounts( previousAsset->rowSolidCounts, previousAsset->rowSolidCount,
+											   previousAsset->colSolidCounts, previousAsset->colSolidCount, &oldMinX, &oldMinY,
+											   &oldMaxX, &oldMaxY ) == false ||
+		 b2PixelAsset_ComputeBoundsFromCounts( buffers->rowSolidCounts, config->height, buffers->colSolidCounts, config->width,
+											   &minX, &minY, &maxX, &maxY ) == false )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+
+	int32_t featureMinX = b2MaxInt( 0, dirtyMinX - 1 );
+	int32_t featureMinY = b2MaxInt( 0, dirtyMinY - 1 );
+	int32_t featureMaxX = b2MinInt( config->width, dirtyMaxX + 1 );
+	int32_t featureMaxY = b2MinInt( config->height, dirtyMaxY + 1 );
+	for ( int32_t y = featureMinY; y < featureMaxY; ++y )
+	{
+		for ( int32_t x = featureMinX; x < featureMaxX; ++x )
+		{
+			b2PixelAsset_MarkFeatureCell( buffers->scratchCells, y * config->width + x, &result.featureCellsReclassified );
+		}
+	}
+
+	bool supportAnchorChanged = config->supportCornerInterval > 0 &&
+								( oldMinX != minX || oldMinY != minY || oldMaxX != maxX || oldMaxY != maxY );
+	if ( supportAnchorChanged )
+	{
+		for ( int32_t i = 0; i < previousAsset->cornerCount; ++i )
+		{
+			int32_t index = (int32_t)previousAsset->corners[i].id - 1;
+			if ( 0 <= index && index < cellCount )
+			{
+				b2PixelAsset_MarkFeatureCell( buffers->scratchCells, index, &result.featureCellsReclassified );
+			}
+		}
+		for ( int32_t i = 0; i < previousAsset->edgeCount; ++i )
+		{
+			int32_t index = (int32_t)previousAsset->edges[i].id - 1;
+			if ( 0 <= index && index < cellCount )
+			{
+				b2PixelAsset_MarkFeatureCell( buffers->scratchCells, index, &result.featureCellsReclassified );
+			}
+		}
+	}
+
+	int32_t cornerCount = 0;
+	int32_t edgeCount = 0;
+	for ( int32_t i = 0; i < previousAsset->cornerCount; ++i )
+	{
+		int32_t index = (int32_t)previousAsset->corners[i].id - 1;
+		if ( 0 <= index && index < cellCount && buffers->scratchCells[index] != 0 )
+		{
+			result.featureRefsRemoved += 1;
+			continue;
+		}
+		if ( cornerCount >= buffers->cornerCapacity )
+		{
+			result.overflow = true;
+			return result;
+		}
+		buffers->corners[cornerCount++] = previousAsset->corners[i];
+	}
+
+	for ( int32_t i = 0; i < previousAsset->edgeCount; ++i )
+	{
+		int32_t index = (int32_t)previousAsset->edges[i].id - 1;
+		if ( 0 <= index && index < cellCount && buffers->scratchCells[index] != 0 )
+		{
+			result.featureRefsRemoved += 1;
+			continue;
+		}
+		if ( buffers->edges == NULL || edgeCount >= buffers->edgeCapacity )
+		{
+			result.overflow = true;
+			return result;
+		}
+		buffers->edges[edgeCount++] = previousAsset->edges[i];
+	}
+
+	for ( int32_t y = featureMinY; y < featureMaxY; ++y )
+	{
+		for ( int32_t x = featureMinX; x < featureMaxX; ++x )
+		{
+			int32_t index = y * config->width + x;
+			if ( buffers->scratchCells[index] == 0 )
+			{
+				continue;
+			}
+			if ( b2PixelAsset_ReclassifyMarkedCell( config, buffers->occupancyBits, result.requiredOccupancyWords, buffers,
+													minX, minY, maxX, maxY, index, &cornerCount, &edgeCount,
+													&result.featureRefsAdded ) == false )
+			{
+				result.overflow = true;
+				return result;
+			}
+			buffers->scratchCells[index] = 0;
+		}
+	}
+
+	if ( supportAnchorChanged )
+	{
+		for ( int32_t i = 0; i < previousAsset->cornerCount; ++i )
+		{
+			int32_t index = (int32_t)previousAsset->corners[i].id - 1;
+			if ( 0 <= index && index < cellCount && buffers->scratchCells[index] != 0 )
+			{
+				if ( b2PixelAsset_ReclassifyMarkedCell( config, buffers->occupancyBits, result.requiredOccupancyWords, buffers,
+														minX, minY, maxX, maxY, index, &cornerCount, &edgeCount,
+														&result.featureRefsAdded ) == false )
+				{
+					result.overflow = true;
+					return result;
+				}
+				buffers->scratchCells[index] = 0;
+			}
+		}
+		for ( int32_t i = 0; i < previousAsset->edgeCount; ++i )
+		{
+			int32_t index = (int32_t)previousAsset->edges[i].id - 1;
+			if ( 0 <= index && index < cellCount && buffers->scratchCells[index] != 0 )
+			{
+				if ( b2PixelAsset_ReclassifyMarkedCell( config, buffers->occupancyBits, result.requiredOccupancyWords, buffers,
+														minX, minY, maxX, maxY, index, &cornerCount, &edgeCount,
+														&result.featureRefsAdded ) == false )
+				{
+					result.overflow = true;
+					return result;
+				}
+				buffers->scratchCells[index] = 0;
+			}
+		}
+	}
+
+	if ( cornerCount <= 0 )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+
+	qsort( buffers->corners, (size_t)cornerCount, sizeof( b2PixelFeatureRef ), b2ComparePixelFeatureRefById );
+	if ( edgeCount > 0 )
+	{
+		qsort( buffers->edges, (size_t)edgeCount, sizeof( b2PixelFeatureRef ), b2ComparePixelFeatureRefById );
+	}
+
+	b2Vec2 centroid = b2PixelAsset_ComputeCentroidFromMoments( config->width, config->height, config->pixelSize, solidCount,
+															   momentSumX, momentSumY );
+	float rotationalInertia =
+		b2PixelAsset_ComputeInertiaFromMoments( config->width, config->height, config->pixelSize, solidCount, momentSumX,
+												momentSumY, momentSumX2, momentSumY2, centroid );
+	float halfWidth = 0.5f * (float)config->width * config->pixelSize;
+	float halfHeight = 0.5f * (float)config->height * config->pixelSize;
+
+	result.requiredCorners = cornerCount;
+	result.requiredEdges = edgeCount;
+	result.asset.width = config->width;
+	result.asset.height = config->height;
+	result.asset.pixelSize = config->pixelSize;
+	result.asset.occupancyBits = buffers->occupancyBits;
+	result.asset.occupancyWordCount = result.requiredOccupancyWords;
+	result.asset.featureTypes = buffers->featureTypes;
+	result.asset.normalIndices = buffers->normalIndices;
+	result.asset.corners = buffers->corners;
+	result.asset.cornerCount = cornerCount;
+	result.asset.edges = edgeCount > 0 ? buffers->edges : NULL;
+	result.asset.edgeCount = edgeCount;
+	result.asset.rowSolidCounts = buffers->rowSolidCounts;
+	result.asset.rowSolidCount = config->height;
+	result.asset.colSolidCounts = buffers->colSolidCounts;
+	result.asset.colSolidCount = config->width;
+	result.asset.momentSumX = momentSumX;
+	result.asset.momentSumY = momentSumY;
+	result.asset.momentSumX2 = momentSumX2;
+	result.asset.momentSumY2 = momentSumY2;
+	result.asset.occupiedAABB.lowerBound =
+		(b2Vec2){ (float)minX * config->pixelSize - halfWidth, (float)minY * config->pixelSize - halfHeight };
+	result.asset.occupiedAABB.upperBound =
+		(b2Vec2){ ( (float)maxX + 1.0f ) * config->pixelSize - halfWidth,
+				  ( (float)maxY + 1.0f ) * config->pixelSize - halfHeight };
+	result.asset.centroid = centroid;
+	result.asset.rotationalInertia = rotationalInertia;
+	result.asset.solidCount = solidCount;
+	result.asset.topologyVersion = config->topologyVersion;
+	result.success = b2IsValidAABB( result.asset.occupiedAABB ) && b2IsValidVec2( result.asset.centroid ) &&
+					 b2IsValidFloat( result.asset.rotationalInertia ) && result.asset.rotationalInertia >= 0.0f;
 	result.invalidInput = result.success == false;
 	return result;
 }

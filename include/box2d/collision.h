@@ -529,6 +529,14 @@ typedef struct b2PixelAsset
 	int32_t cornerCount;
 	const b2PixelFeatureRef* edges;
 	int32_t edgeCount;
+	const int32_t* rowSolidCounts;
+	int32_t rowSolidCount;
+	const int32_t* colSolidCounts;
+	int32_t colSolidCount;
+	int64_t momentSumX;
+	int64_t momentSumY;
+	int64_t momentSumX2;
+	int64_t momentSumY2;
 	b2AABB occupiedAABB;
 	b2Vec2 centroid;
 	float rotationalInertia;
@@ -572,6 +580,12 @@ typedef struct b2PixelAssetBuildBuffers
 	int32_t cornerCapacity;
 	b2PixelFeatureRef* edges;
 	int32_t edgeCapacity;
+	int32_t* rowSolidCounts;
+	int32_t rowSolidCountCapacity;
+	int32_t* colSolidCounts;
+	int32_t colSolidCountCapacity;
+	uint8_t* scratchCells;
+	int32_t scratchCellCapacity;
 } b2PixelAssetBuildBuffers;
 
 /// Result from b2BuildPixelAssetFromOccupancy. If success is false, required* fields report the needed capacities.
@@ -585,10 +599,55 @@ typedef struct b2PixelAssetBuildResult
 	int32_t requiredNormalIndices;
 	int32_t requiredCorners;
 	int32_t requiredEdges;
+	int32_t requiredRowSolidCounts;
+	int32_t requiredColSolidCounts;
 	bool success;
 	bool overflow;
 	bool invalidInput;
 } b2PixelAssetBuildResult;
+
+/// Dirty rect update configuration for incrementally updating a caller-owned b2PixelAsset view.
+/// The dirty rect is in pixel asset cell coordinates and uses an exclusive max through width/height.
+/// @ingroup shape
+typedef struct b2PixelAssetDirtyUpdateConfig
+{
+	int32_t width;
+	int32_t height;
+	float pixelSize;
+	int32_t supportCornerInterval;
+	uint32_t topologyVersion;
+	int32_t dirtyX;
+	int32_t dirtyY;
+	int32_t dirtyWidth;
+	int32_t dirtyHeight;
+} b2PixelAssetDirtyUpdateConfig;
+
+/// Result from b2UpdatePixelAssetFromDirtyOccupancy.
+/// @ingroup shape
+typedef struct b2PixelAssetDirtyUpdateResult
+{
+	b2PixelAsset asset;
+	int32_t requiredOccupancyWords;
+	int32_t requiredFeatureTypes;
+	int32_t requiredNormalIndices;
+	int32_t requiredCorners;
+	int32_t requiredEdges;
+	int32_t requiredRowSolidCounts;
+	int32_t requiredColSolidCounts;
+	int32_t dirtyCellsScanned;
+	int32_t dirtyOccupancyWordsCopied;
+	int32_t dirtyFeatureCellsCopied;
+	int32_t dirtyNormalCellsCopied;
+	int32_t dirtyRowCountsCopied;
+	int32_t dirtyColCountsCopied;
+	int32_t dirtyScratchCellsCleared;
+	int32_t featureCellsReclassified;
+	int32_t featureRefsRemoved;
+	int32_t featureRefsAdded;
+	bool success;
+	bool overflow;
+	bool invalidInput;
+} b2PixelAssetDirtyUpdateResult;
 
 /// Low-cost aggregate stats for the PixelShape-PixelShape narrowphase.
 /// @ingroup shape
@@ -620,6 +679,14 @@ B2_API b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAsse
 															  const uint64_t* sourceOccupancyBits,
 															  int32_t sourceOccupancyWordCount,
 															  const b2PixelAssetBuildBuffers* buffers );
+
+/// Incrementally update a caller-owned b2PixelAsset from updated occupancy bits and a dirty rect. This function does not allocate.
+/// @ingroup shape
+B2_API b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2PixelAssetDirtyUpdateConfig* config,
+																		   const b2PixelAsset* previousAsset,
+																		   const uint64_t* updatedOccupancyBits,
+																		   int32_t updatedOccupancyWordCount,
+																		   const b2PixelAssetBuildBuffers* buffers );
 
 /// Validate that a b2PixelAsset obeys the public PixelShape contract required by create and collide.
 /// @ingroup shape
