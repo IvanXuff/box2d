@@ -537,6 +537,10 @@ typedef struct b2ManifoldPoint
 	/// The friction impulse
 	float tangentImpulse;
 
+	/// The total tangent impulse applied across sub-stepping. This excludes warm starting
+	/// and is used by breakable contact pressure to estimate shear load for this step.
+	float totalTangentImpulse;
+
 	/// The total normal impulse applied across sub-stepping and restitution. This is important
 	/// to identify speculative contact points that had an interaction in the time step.
 	/// This includes the warm starting impulse, the sub-step delta impulse, and the restitution

@@ -633,6 +633,7 @@ bool b2UpdateContact( b2World* world, b2ContactSim* contactSim, b2Shape* shapeA,
 
 		mp2->normalImpulse = 0.0f;
 		mp2->tangentImpulse = 0.0f;
+		mp2->totalTangentImpulse = 0.0f;
 		mp2->totalNormalImpulse = 0.0f;
 		mp2->normalVelocity = 0.0f;
 		mp2->normalMass = 0.0f;

@@ -187,6 +187,7 @@ void b2PrepareOverflowContacts( b2StepContext* context )
 			cp->yieldImpulse = contactYieldImpulse;
 			cp->normalImpulse = b2MinFloat( warmStartScale * mp->normalImpulse, cp->yieldImpulse );
 			cp->tangentImpulse = warmStartScale * mp->tangentImpulse;
+			cp->totalTangentImpulse = 0.0f;
 			cp->totalNormalImpulse = 0.0f;
 			cp->requiredNormalImpulse = cp->normalImpulse;
 			cp->unresolvedNormalImpulse = 0.0f;
@@ -429,6 +430,7 @@ void b2SolveOverflowContacts( b2StepContext* context, bool useBias )
 			float newImpulse = b2ClampFloat( cp->tangentImpulse + impulse, -maxFriction, maxFriction );
 			impulse = newImpulse - cp->tangentImpulse;
 			cp->tangentImpulse = newImpulse;
+			cp->totalTangentImpulse += impulse;
 
 			// apply tangent impulse
 			b2Vec2 P = b2MulSV( impulse, tangent );
@@ -595,6 +597,7 @@ void b2StoreOverflowImpulses( b2StepContext* context )
 		{
 			manifold->points[j].normalImpulse = constraint->points[j].normalImpulse;
 			manifold->points[j].tangentImpulse = constraint->points[j].tangentImpulse;
+			manifold->points[j].totalTangentImpulse = constraint->points[j].totalTangentImpulse;
 			manifold->points[j].totalNormalImpulse = constraint->points[j].totalNormalImpulse;
 			manifold->points[j].normalVelocity = constraint->points[j].relativeVelocity;
 			manifold->points[j].normalMass = constraint->points[j].normalMass;
@@ -1155,6 +1158,7 @@ typedef struct b2ContactConstraintWide
 	b2FloatW normalImpulse1;
 	b2FloatW totalNormalImpulse1;
 	b2FloatW tangentImpulse1;
+	b2FloatW totalTangentImpulse1;
 	b2FloatW yieldImpulse1;
 	b2FloatW requiredNormalImpulse1;
 	b2FloatW unresolvedNormalImpulse1;
@@ -1164,6 +1168,7 @@ typedef struct b2ContactConstraintWide
 	b2FloatW normalImpulse2;
 	b2FloatW totalNormalImpulse2;
 	b2FloatW tangentImpulse2;
+	b2FloatW totalTangentImpulse2;
 	b2FloatW normalMass2, tangentMass2;
 	b2FloatW yieldImpulse2;
 	b2FloatW requiredNormalImpulse2;
@@ -1771,6 +1776,7 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 					( (float*)&constraint->yieldImpulse1 )[j] = contactYieldImpulse;
 					( (float*)&constraint->normalImpulse1 )[j] = b2MinFloat( warmStartScale * mp->normalImpulse, contactYieldImpulse );
 					( (float*)&constraint->tangentImpulse1 )[j] = warmStartScale * mp->tangentImpulse;
+					( (float*)&constraint->totalTangentImpulse1 )[j] = 0.0f;
 					( (float*)&constraint->totalNormalImpulse1 )[j] = 0.0f;
 					( (float*)&constraint->requiredNormalImpulse1 )[j] = ( (float*)&constraint->normalImpulse1 )[j];
 					( (float*)&constraint->unresolvedNormalImpulse1 )[j] = 0.0f;
@@ -1812,6 +1818,7 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 					( (float*)&constraint->yieldImpulse2 )[j] = contactYieldImpulse;
 					( (float*)&constraint->normalImpulse2 )[j] = b2MinFloat( warmStartScale * mp->normalImpulse, contactYieldImpulse );
 					( (float*)&constraint->tangentImpulse2 )[j] = warmStartScale * mp->tangentImpulse;
+					( (float*)&constraint->totalTangentImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->totalNormalImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->requiredNormalImpulse2 )[j] = ( (float*)&constraint->normalImpulse2 )[j];
 					( (float*)&constraint->unresolvedNormalImpulse2 )[j] = 0.0f;
@@ -1838,6 +1845,7 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 					( (float*)&constraint->baseSeparation2 )[j] = 0.0f;
 					( (float*)&constraint->normalImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->tangentImpulse2 )[j] = 0.0f;
+					( (float*)&constraint->totalTangentImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->totalNormalImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->yieldImpulse2 )[j] = FLT_MAX;
 					( (float*)&constraint->requiredNormalImpulse2 )[j] = 0.0f;
@@ -1884,6 +1892,7 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 				( (float*)&constraint->baseSeparation1 )[j] = 0.0f;
 				( (float*)&constraint->normalImpulse1 )[j] = 0.0f;
 				( (float*)&constraint->tangentImpulse1 )[j] = 0.0f;
+				( (float*)&constraint->totalTangentImpulse1 )[j] = 0.0f;
 				( (float*)&constraint->totalNormalImpulse1 )[j] = 0.0f;
 				( (float*)&constraint->normalMass1 )[j] = 0.0f;
 				( (float*)&constraint->tangentMass1 )[j] = 0.0f;
@@ -1899,6 +1908,7 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 				( (float*)&constraint->baseSeparation2 )[j] = 0.0f;
 				( (float*)&constraint->normalImpulse2 )[j] = 0.0f;
 				( (float*)&constraint->tangentImpulse2 )[j] = 0.0f;
+				( (float*)&constraint->totalTangentImpulse2 )[j] = 0.0f;
 				( (float*)&constraint->totalNormalImpulse2 )[j] = 0.0f;
 				( (float*)&constraint->normalMass2 )[j] = 0.0f;
 				( (float*)&constraint->tangentMass2 )[j] = 0.0f;
@@ -2160,6 +2170,7 @@ void b2SolveContactsTask( int startIndex, int endIndex, b2StepContext* context, 
 			newImpulse = b2MaxW( b2SubW( b2ZeroW(), maxFriction ), b2MinW( newImpulse, maxFriction ) );
 			b2FloatW impulse = b2SubW( newImpulse, c->tangentImpulse1 );
 			c->tangentImpulse1 = newImpulse;
+			c->totalTangentImpulse1 = b2AddW( c->totalTangentImpulse1, impulse );
 
 			// Apply contact impulse
 			b2FloatW Px = b2MulW( impulse, tangentX );
@@ -2197,6 +2208,7 @@ void b2SolveContactsTask( int startIndex, int endIndex, b2StepContext* context, 
 			newImpulse = b2MaxW( b2SubW( b2ZeroW(), maxFriction ), b2MinW( newImpulse, maxFriction ) );
 			b2FloatW impulse = b2SubW( newImpulse, c->tangentImpulse2 );
 			c->tangentImpulse2 = newImpulse;
+			c->totalTangentImpulse2 = b2AddW( c->totalTangentImpulse2, impulse );
 
 			// Apply contact impulse
 			b2FloatW Px = b2MulW( impulse, tangentX );
@@ -2370,6 +2382,8 @@ void b2StoreImpulsesTask( int startIndex, int endIndex, b2StepContext* context )
 		const float* normalImpulse2 = (float*)&c->normalImpulse2;
 		const float* tangentImpulse1 = (float*)&c->tangentImpulse1;
 		const float* tangentImpulse2 = (float*)&c->tangentImpulse2;
+		const float* totalTangentImpulse1 = (float*)&c->totalTangentImpulse1;
+		const float* totalTangentImpulse2 = (float*)&c->totalTangentImpulse2;
 		const float* totalNormalImpulse1 = (float*)&c->totalNormalImpulse1;
 		const float* totalNormalImpulse2 = (float*)&c->totalNormalImpulse2;
 		const float* normalVelocity1 = (float*)&c->relativeVelocity1;
@@ -2394,6 +2408,7 @@ void b2StoreImpulsesTask( int startIndex, int endIndex, b2StepContext* context )
 
 			m->points[0].normalImpulse = normalImpulse1[laneIndex];
 			m->points[0].tangentImpulse = tangentImpulse1[laneIndex];
+			m->points[0].totalTangentImpulse = totalTangentImpulse1[laneIndex];
 			m->points[0].totalNormalImpulse = totalNormalImpulse1[laneIndex];
 			m->points[0].normalVelocity = normalVelocity1[laneIndex];
 			m->points[0].normalMass = normalMass1[laneIndex];
@@ -2404,6 +2419,7 @@ void b2StoreImpulsesTask( int startIndex, int endIndex, b2StepContext* context )
 
 			m->points[1].normalImpulse = normalImpulse2[laneIndex];
 			m->points[1].tangentImpulse = tangentImpulse2[laneIndex];
+			m->points[1].totalTangentImpulse = totalTangentImpulse2[laneIndex];
 			m->points[1].totalNormalImpulse = totalNormalImpulse2[laneIndex];
 			m->points[1].normalVelocity = normalVelocity2[laneIndex];
 			m->points[1].normalMass = normalMass2[laneIndex];
