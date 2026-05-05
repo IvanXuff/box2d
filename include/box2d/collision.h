@@ -487,6 +487,216 @@ typedef struct b2TOIOutput
 	float fraction;
 } b2TOIOutput;
 
+/// Pixel feature classification for b2PixelAsset::featureTypes.
+/// @ingroup shape
+typedef enum b2PixelFeatureType
+{
+	b2_pixelFeatureEmpty = 0,
+	b2_pixelFeatureInternal = 1,
+	b2_pixelFeatureEdge = 2,
+	b2_pixelFeatureCorner = 3,
+} b2PixelFeatureType;
+
+/// A precomputed pixel boundary feature. The id must be stable for a given asset topology.
+/// @ingroup shape
+typedef struct b2PixelFeatureRef
+{
+	int16_t x;
+	int16_t y;
+	uint16_t id;
+	uint8_t type;
+	uint8_t normalIndex;
+} b2PixelFeatureRef;
+
+/// Default pixel disk radius in pixel-size units. A b2PixelShape::diskRadius value of 0 selects this default.
+/// @ingroup shape
+#define b2_defaultPixelDiskRadius 0.62f
+
+/// Caller-owned immutable pixel collision asset view. Box2D does not copy or free these tables.
+/// The feature tables are canonical row-major lists with strictly increasing feature ids. The asset must contain at
+/// least one corner feature for PixelShape-PixelShape contact.
+/// @ingroup shape
+typedef struct b2PixelAsset
+{
+	int32_t width;
+	int32_t height;
+	float pixelSize;
+	const uint64_t* occupancyBits;
+	int32_t occupancyWordCount;
+	const uint8_t* featureTypes;
+	const uint8_t* normalIndices;
+	const b2PixelFeatureRef* corners;
+	int32_t cornerCount;
+	const b2PixelFeatureRef* edges;
+	int32_t edgeCount;
+	const int32_t* rowSolidCounts;
+	int32_t rowSolidCount;
+	const int32_t* colSolidCounts;
+	int32_t colSolidCount;
+	int64_t momentSumX;
+	int64_t momentSumY;
+	int64_t momentSumX2;
+	int64_t momentSumY2;
+	b2AABB occupiedAABB;
+	b2Vec2 centroid;
+	float rotationalInertia;
+	int32_t solidCount;
+	uint32_t topologyVersion;
+} b2PixelAsset;
+
+/// Pixel shape geometry. The asset is a caller-owned immutable view and must outlive the shape.
+/// diskRadius is measured in pixel-size units; 0 selects b2_defaultPixelDiskRadius and negative values are invalid.
+/// @ingroup shape
+typedef struct b2PixelShape
+{
+	const b2PixelAsset* asset;
+	b2Vec2 localOrigin;
+	float diskRadius;
+	uint32_t topologyVersion;
+} b2PixelShape;
+
+/// Configuration for building a canonical b2PixelAsset from occupancy bits.
+/// @ingroup shape
+typedef struct b2PixelAssetBuildConfig
+{
+	int32_t width;
+	int32_t height;
+	float pixelSize;
+	int32_t supportCornerInterval;
+	uint32_t topologyVersion;
+} b2PixelAssetBuildConfig;
+
+/// Caller-owned output buffers for b2BuildPixelAssetFromOccupancy.
+/// @ingroup shape
+typedef struct b2PixelAssetBuildBuffers
+{
+	uint64_t* occupancyBits;
+	int32_t occupancyWordCapacity;
+	uint8_t* featureTypes;
+	int32_t featureTypeCapacity;
+	uint8_t* normalIndices;
+	int32_t normalIndexCapacity;
+	b2PixelFeatureRef* corners;
+	int32_t cornerCapacity;
+	b2PixelFeatureRef* edges;
+	int32_t edgeCapacity;
+	int32_t* rowSolidCounts;
+	int32_t rowSolidCountCapacity;
+	int32_t* colSolidCounts;
+	int32_t colSolidCountCapacity;
+	uint8_t* scratchCells;
+	int32_t scratchCellCapacity;
+} b2PixelAssetBuildBuffers;
+
+/// Result from b2BuildPixelAssetFromOccupancy. If success is false, required* fields report the needed capacities.
+/// The returned asset is a view of the caller-provided buffers and becomes invalid if those buffers move or die.
+/// @ingroup shape
+typedef struct b2PixelAssetBuildResult
+{
+	b2PixelAsset asset;
+	int32_t requiredOccupancyWords;
+	int32_t requiredFeatureTypes;
+	int32_t requiredNormalIndices;
+	int32_t requiredCorners;
+	int32_t requiredEdges;
+	int32_t requiredRowSolidCounts;
+	int32_t requiredColSolidCounts;
+	int32_t solidGatherWordsVisited;
+	int32_t solidGatherSetBitsVisited;
+	bool success;
+	bool overflow;
+	bool invalidInput;
+} b2PixelAssetBuildResult;
+
+/// Dirty rect update configuration for incrementally updating a caller-owned b2PixelAsset view.
+/// The dirty rect is in pixel asset cell coordinates and uses an exclusive max through width/height.
+/// @ingroup shape
+typedef struct b2PixelAssetDirtyUpdateConfig
+{
+	int32_t width;
+	int32_t height;
+	float pixelSize;
+	int32_t supportCornerInterval;
+	uint32_t topologyVersion;
+	int32_t dirtyX;
+	int32_t dirtyY;
+	int32_t dirtyWidth;
+	int32_t dirtyHeight;
+} b2PixelAssetDirtyUpdateConfig;
+
+/// Result from b2UpdatePixelAssetFromDirtyOccupancy.
+/// @ingroup shape
+typedef struct b2PixelAssetDirtyUpdateResult
+{
+	b2PixelAsset asset;
+	int32_t requiredOccupancyWords;
+	int32_t requiredFeatureTypes;
+	int32_t requiredNormalIndices;
+	int32_t requiredCorners;
+	int32_t requiredEdges;
+	int32_t requiredRowSolidCounts;
+	int32_t requiredColSolidCounts;
+	int32_t dirtyCellsScanned;
+	int32_t dirtyOccupancyWordsCopied;
+	int32_t dirtyFeatureCellsCopied;
+	int32_t dirtyNormalCellsCopied;
+	int32_t dirtyRowCountsCopied;
+	int32_t dirtyColCountsCopied;
+	int32_t dirtyScratchCellsCleared;
+	int32_t dirtyWordDeltaRowsVisited;
+	int32_t dirtyWordDeltaWordsVisited;
+	int32_t dirtyWordDeltaBitsVisited;
+	int32_t featureCellsReclassified;
+	int32_t featureRefsRemoved;
+	int32_t featureRefsAdded;
+	bool success;
+	bool overflow;
+	bool invalidInput;
+} b2PixelAssetDirtyUpdateResult;
+
+/// Low-cost aggregate stats for the PixelShape-PixelShape narrowphase.
+/// @ingroup shape
+typedef struct b2PixelNarrowphaseStats
+{
+	int32_t sourceFeatureIterations;
+	int32_t sourceFeatures;
+	int32_t cellVisits;
+	int32_t diskTests;
+	int32_t rawContacts;
+	int32_t rawContactAttempts;
+	int32_t manifoldPoints;
+	bool sourceFeaturesCapped;
+	bool cellVisitsCapped;
+	bool diskTestsCapped;
+	bool rawContactsCapped;
+	bool rescueCandidate;
+	bool rescueUsed;
+	bool invalidInput;
+} b2PixelNarrowphaseStats;
+
+/// Default PixelAsset builder configuration. Fill width, height, and optionally pixelSize before building.
+/// @ingroup shape
+B2_API b2PixelAssetBuildConfig b2DefaultPixelAssetBuildConfig( void );
+
+/// Build a canonical, caller-owned b2PixelAsset view from source occupancy bits. This function does not allocate.
+/// @ingroup shape
+B2_API b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildConfig* config,
+															  const uint64_t* sourceOccupancyBits,
+															  int32_t sourceOccupancyWordCount,
+															  const b2PixelAssetBuildBuffers* buffers );
+
+/// Incrementally update a caller-owned b2PixelAsset from updated occupancy bits and a dirty rect. This function does not allocate.
+/// @ingroup shape
+B2_API b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2PixelAssetDirtyUpdateConfig* config,
+																		   const b2PixelAsset* previousAsset,
+																		   const uint64_t* updatedOccupancyBits,
+																		   int32_t updatedOccupancyWordCount,
+																		   const b2PixelAssetBuildBuffers* buffers );
+
+/// Validate that a b2PixelAsset obeys the public PixelShape contract required by create and collide.
+/// @ingroup shape
+B2_API bool b2ValidatePixelAsset( const b2PixelAsset* asset );
+
 /// Compute the upper bound on time before two shapes penetrate. Time is represented as
 /// a fraction between [0,tMax]. This uses a swept separating axis and may miss some intermediate,
 /// non-tunneling collisions. If you change the time interval, you should call this function
@@ -637,6 +847,14 @@ B2_API b2Manifold b2CollidePolygonAndCapsule( const b2Polygon* polygonA, b2Trans
 
 /// Compute the contact manifold between two polygons
 B2_API b2Manifold b2CollidePolygons( const b2Polygon* polygonA, b2Transform xfA, const b2Polygon* polygonB, b2Transform xfB );
+
+/// Compute the contact manifold between two pixel shapes
+B2_API b2Manifold b2CollidePixelShapes( const b2PixelShape* pixelA, b2Transform xfA, const b2PixelShape* pixelB,
+										b2Transform xfB );
+
+/// Compute the contact manifold between two pixel shapes and return aggregate narrowphase stats.
+B2_API b2Manifold b2CollidePixelShapesWithStats( const b2PixelShape* pixelA, b2Transform xfA, const b2PixelShape* pixelB,
+												 b2Transform xfB, b2PixelNarrowphaseStats* stats );
 
 /// Compute the contact manifold between an segment and a polygon
 B2_API b2Manifold b2CollideSegmentAndPolygon( const b2Segment* segmentA, b2Transform xfA, const b2Polygon* polygonB,

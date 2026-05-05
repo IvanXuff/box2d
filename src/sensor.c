@@ -100,6 +100,11 @@ static bool b2SensorQueryCallback( int proxyId, uint64_t userData, void* context
 
 	b2Transform otherTransform = b2GetBodyTransform( world, otherShape->bodyId );
 
+	if ( sensorShape->type == b2_pixelShape || otherShape->type == b2_pixelShape )
+	{
+		return true;
+	}
+
 	b2DistanceInput input;
 	input.proxyA = b2MakeShapeDistanceProxy( sensorShape );
 	input.proxyB = b2MakeShapeDistanceProxy( otherShape );

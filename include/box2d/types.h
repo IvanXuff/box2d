@@ -348,6 +348,9 @@ typedef enum b2ShapeType
 	/// A line segment owned by a chain shape
 	b2_chainSegmentShape,
 
+	/// A caller-owned immutable pixel occupancy shape
+	b2_pixelShape,
+
 	/// The number of shape types
 	b2_shapeTypeCount
 } b2ShapeType;
@@ -434,7 +437,7 @@ typedef struct b2ShapeDef
 	bool invokeContactCreation;
 
 	/// Should the body update the mass properties when this shape is created. Default is true.
-	/// Warning: if this is true, you MUST call b2Body_ApplyMassFromShapes before simulating the world.
+	/// Warning: if this is false, you MUST call b2Body_ApplyMassFromShapes or b2Body_SetMassData before simulating the world.
 	bool updateBodyMass;
 
 	/// Used internally to detect a valid definition. DO NOT SET.

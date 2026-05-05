@@ -36,6 +36,7 @@ typedef struct b2Shape
 		b2Polygon polygon;
 		b2Segment segment;
 		b2ChainSegment chainSegment;
+		b2PixelShape pixel;
 	};
 
 	uint16_t generation;
@@ -110,6 +111,11 @@ static inline float b2GetShapeRadius( const b2Shape* shape )
 			return shape->circle.radius;
 		case b2_polygonShape:
 			return shape->polygon.radius;
+		case b2_pixelShape:
+		{
+			float diskRadius = shape->pixel.diskRadius == 0.0f ? b2_defaultPixelDiskRadius : shape->pixel.diskRadius;
+			return shape->pixel.asset == NULL || diskRadius < 0.0f ? 0.0f : diskRadius * shape->pixel.asset->pixelSize;
+		}
 		default:
 			return 0.0f;
 	}
