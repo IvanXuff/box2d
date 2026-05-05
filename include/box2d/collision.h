@@ -508,6 +508,38 @@ typedef struct b2PixelFeatureRef
 	uint8_t normalIndex;
 } b2PixelFeatureRef;
 
+/// Alchemy's vendored Box2D fork is a Blast2D pixel-physics engine. PixelShape
+/// material physics is intentionally owned by this layer so mass/contact/fracture
+/// rows do not depend on host-side Godot calculations.
+/// @ingroup shape
+typedef struct b2BlastMaterialPhysics
+{
+	int32_t materialId;
+	float density;
+	float friction;
+	float restitution;
+	float hardness;
+	float contactCapacity;
+	float toughness;
+	float brittleness;
+	float compressStrength;
+	float shearStrength;
+	float tensileStrength;
+	int32_t authoringShaderId;
+	int32_t damageShaderId;
+} b2BlastMaterialPhysics;
+
+/// Caller-owned Blast2D material table. PixelAssets keep a pointer to this table
+/// and read it during mass/contact/fracture queries.
+/// @ingroup shape
+typedef struct b2BlastMaterialTable
+{
+	const b2BlastMaterialPhysics* materials;
+	int32_t materialCount;
+	uint64_t revision;
+	uint64_t hash;
+} b2BlastMaterialTable;
+
 /// Default pixel disk radius in pixel-size units. A b2PixelShape::diskRadius value of 0 selects this default.
 /// @ingroup shape
 #define b2_defaultPixelDiskRadius 0.62f
@@ -523,6 +555,10 @@ typedef struct b2PixelAsset
 	float pixelSize;
 	const uint64_t* occupancyBits;
 	int32_t occupancyWordCount;
+	const int32_t* materialIds;
+	int32_t materialIdCount;
+	const b2BlastMaterialTable* materialTable;
+	uint64_t materialHash;
 	const uint8_t* featureTypes;
 	const uint8_t* normalIndices;
 	const b2PixelFeatureRef* corners;
@@ -564,6 +600,10 @@ typedef struct b2PixelAssetBuildConfig
 	float pixelSize;
 	int32_t supportCornerInterval;
 	uint32_t topologyVersion;
+	const int32_t* materialIds;
+	int32_t materialIdCount;
+	const b2BlastMaterialTable* materialTable;
+	uint64_t materialHash;
 } b2PixelAssetBuildConfig;
 
 /// Caller-owned output buffers for b2BuildPixelAssetFromOccupancy.
@@ -572,6 +612,8 @@ typedef struct b2PixelAssetBuildBuffers
 {
 	uint64_t* occupancyBits;
 	int32_t occupancyWordCapacity;
+	int32_t* materialIds;
+	int32_t materialIdCapacity;
 	uint8_t* featureTypes;
 	int32_t featureTypeCapacity;
 	uint8_t* normalIndices;
@@ -595,6 +637,7 @@ typedef struct b2PixelAssetBuildResult
 {
 	b2PixelAsset asset;
 	int32_t requiredOccupancyWords;
+	int32_t requiredMaterialIds;
 	int32_t requiredFeatureTypes;
 	int32_t requiredNormalIndices;
 	int32_t requiredCorners;
@@ -618,6 +661,10 @@ typedef struct b2PixelAssetDirtyUpdateConfig
 	float pixelSize;
 	int32_t supportCornerInterval;
 	uint32_t topologyVersion;
+	const int32_t* materialIds;
+	int32_t materialIdCount;
+	const b2BlastMaterialTable* materialTable;
+	uint64_t materialHash;
 	int32_t dirtyX;
 	int32_t dirtyY;
 	int32_t dirtyWidth;
@@ -630,6 +677,7 @@ typedef struct b2PixelAssetDirtyUpdateResult
 {
 	b2PixelAsset asset;
 	int32_t requiredOccupancyWords;
+	int32_t requiredMaterialIds;
 	int32_t requiredFeatureTypes;
 	int32_t requiredNormalIndices;
 	int32_t requiredCorners;
@@ -696,6 +744,15 @@ B2_API b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const
 /// Validate that a b2PixelAsset obeys the public PixelShape contract required by create and collide.
 /// @ingroup shape
 B2_API bool b2ValidatePixelAsset( const b2PixelAsset* asset );
+
+/// Return the material id stored on a PixelAsset cell, or 0 when no material payload exists.
+/// @ingroup shape
+B2_API int32_t b2PixelAsset_GetMaterialId( const b2PixelAsset* asset, int x, int y );
+
+/// Return the density resolved from the PixelAsset's Blast2D material table, with fallbackDensity
+/// used when no material payload/table entry is available.
+/// @ingroup shape
+B2_API float b2PixelAsset_GetMaterialDensity( const b2PixelAsset* asset, int x, int y, float fallbackDensity );
 
 /// Compute the upper bound on time before two shapes penetrate. Time is represented as
 /// a fraction between [0,tMax]. This uses a swept separating axis and may miss some intermediate,

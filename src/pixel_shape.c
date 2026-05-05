@@ -79,6 +79,35 @@ static bool b2IsPixelAssetUsable( const b2PixelAsset* asset )
 		   b2IsValidFloat( asset->pixelSize );
 }
 
+static const b2BlastMaterialPhysics* b2BlastMaterialTable_Find( const b2BlastMaterialTable* table, int32_t materialId )
+{
+	if ( table == NULL || table->materials == NULL || table->materialCount <= 0 || materialId <= 0 )
+	{
+		return NULL;
+	}
+
+	for ( int32_t i = 0; i < table->materialCount; ++i )
+	{
+		if ( table->materials[i].materialId == materialId )
+		{
+			return table->materials + i;
+		}
+	}
+
+	return NULL;
+}
+
+static float b2BlastMaterialTable_GetDensity( const b2BlastMaterialTable* table, int32_t materialId, float fallbackDensity )
+{
+	const b2BlastMaterialPhysics* material = b2BlastMaterialTable_Find( table, materialId );
+	if ( material == NULL || b2IsValidFloat( material->density ) == false || material->density <= 0.0f )
+	{
+		return fallbackDensity > 0.0f && b2IsValidFloat( fallbackDensity ) ? fallbackDensity : 1.0f;
+	}
+
+	return material->density;
+}
+
 static bool b2PixelAsset_GetCellCount( const b2PixelAsset* asset, int32_t* cellCount )
 {
 	if ( b2IsPixelAssetUsable( asset ) == false || asset->width > INT32_MAX / asset->height )
@@ -179,6 +208,11 @@ bool b2ValidatePixelAsset( const b2PixelAsset* asset )
 	}
 
 	if ( asset->occupancyWordCount < ( cellCount + 63 ) / 64 )
+	{
+		return false;
+	}
+
+	if ( asset->materialIds != NULL && asset->materialIdCount < cellCount )
 	{
 		return false;
 	}
@@ -767,11 +801,17 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	}
 
 	result.requiredOccupancyWords = ( cellCount + 63 ) / 64;
+	result.requiredMaterialIds = config->materialIds != NULL ? cellCount : 0;
 	result.requiredFeatureTypes = cellCount;
 	result.requiredNormalIndices = cellCount;
 	result.requiredRowSolidCounts = config->height;
 	result.requiredColSolidCounts = config->width;
 	if ( sourceOccupancyWordCount < result.requiredOccupancyWords )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+	if ( config->materialIds != NULL && config->materialIdCount < cellCount )
 	{
 		result.invalidInput = true;
 		return result;
@@ -918,6 +958,8 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	bool hasCapacity = buffers != NULL && buffers->occupancyBits != NULL && buffers->featureTypes != NULL &&
 					   buffers->normalIndices != NULL && buffers->corners != NULL &&
 					   buffers->occupancyWordCapacity >= result.requiredOccupancyWords &&
+					   ( result.requiredMaterialIds == 0 ||
+						 ( buffers->materialIds != NULL && buffers->materialIdCapacity >= result.requiredMaterialIds ) ) &&
 					   buffers->featureTypeCapacity >= result.requiredFeatureTypes &&
 					   buffers->normalIndexCapacity >= result.requiredNormalIndices &&
 					   buffers->cornerCapacity >= result.requiredCorners &&
@@ -934,6 +976,10 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	for ( int32_t i = 0; i < result.requiredOccupancyWords; ++i )
 	{
 		buffers->occupancyBits[i] = sourceOccupancyBits[i];
+	}
+	if ( result.requiredMaterialIds > 0 )
+	{
+		memcpy( buffers->materialIds, config->materialIds, sizeof( int32_t ) * (size_t)cellCount );
 	}
 
 	for ( int32_t i = 0; i < cellCount; ++i )
@@ -992,6 +1038,10 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	result.asset.pixelSize = config->pixelSize;
 	result.asset.occupancyBits = buffers->occupancyBits;
 	result.asset.occupancyWordCount = result.requiredOccupancyWords;
+	result.asset.materialIds = result.requiredMaterialIds > 0 ? buffers->materialIds : NULL;
+	result.asset.materialIdCount = result.requiredMaterialIds;
+	result.asset.materialTable = config->materialTable;
+	result.asset.materialHash = config->materialHash;
 	result.asset.featureTypes = buffers->featureTypes;
 	result.asset.normalIndices = buffers->normalIndices;
 	result.asset.corners = buffers->corners;
@@ -1047,6 +1097,7 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 	}
 
 	result.requiredOccupancyWords = ( cellCount + 63 ) / 64;
+	result.requiredMaterialIds = ( previousAsset->materialIds != NULL || config->materialIds != NULL ) ? cellCount : 0;
 	result.requiredFeatureTypes = cellCount;
 	result.requiredNormalIndices = cellCount;
 	result.requiredRowSolidCounts = config->height;
@@ -1057,6 +1108,16 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 		return result;
 	}
 	if ( previousAsset->occupancyWordCount < result.requiredOccupancyWords )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+	if ( previousAsset->materialIds != NULL && previousAsset->materialIdCount < cellCount )
+	{
+		result.invalidInput = true;
+		return result;
+	}
+	if ( config->materialIds != NULL && config->materialIdCount < cellCount )
 	{
 		result.invalidInput = true;
 		return result;
@@ -1076,6 +1137,8 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 					   buffers->corners != NULL && buffers->rowSolidCounts != NULL && buffers->colSolidCounts != NULL &&
 					   buffers->scratchCells != NULL &&
 					   buffers->occupancyWordCapacity >= result.requiredOccupancyWords &&
+					   ( result.requiredMaterialIds == 0 ||
+						 ( buffers->materialIds != NULL && buffers->materialIdCapacity >= result.requiredMaterialIds ) ) &&
 					   buffers->featureTypeCapacity >= result.requiredFeatureTypes &&
 					   buffers->normalIndexCapacity >= result.requiredNormalIndices &&
 					   buffers->cornerCapacity > 0 && buffers->rowSolidCountCapacity >= result.requiredRowSolidCounts &&
@@ -1088,6 +1151,26 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 	}
 
 	memcpy( buffers->occupancyBits, previousAsset->occupancyBits, sizeof( uint64_t ) * (size_t)result.requiredOccupancyWords );
+	if ( result.requiredMaterialIds > 0 )
+	{
+		if ( previousAsset->materialIds != NULL )
+		{
+			memcpy( buffers->materialIds, previousAsset->materialIds, sizeof( int32_t ) * (size_t)cellCount );
+		}
+		else
+		{
+			memset( buffers->materialIds, 0, sizeof( int32_t ) * (size_t)cellCount );
+		}
+		if ( config->materialIds != NULL )
+		{
+			for ( int32_t y = dirtyMinY; y < dirtyMaxY; ++y )
+			{
+				int32_t rowStart = y * config->width;
+				memcpy( buffers->materialIds + rowStart + dirtyMinX, config->materialIds + rowStart + dirtyMinX,
+						sizeof( int32_t ) * (size_t)( dirtyMaxX - dirtyMinX ) );
+			}
+		}
+	}
 	memcpy( buffers->featureTypes, previousAsset->featureTypes, sizeof( uint8_t ) * (size_t)cellCount );
 	memcpy( buffers->normalIndices, previousAsset->normalIndices, sizeof( uint8_t ) * (size_t)cellCount );
 	memcpy( buffers->rowSolidCounts, previousAsset->rowSolidCounts, sizeof( int32_t ) * (size_t)config->height );
@@ -1355,6 +1438,10 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 	result.asset.pixelSize = config->pixelSize;
 	result.asset.occupancyBits = buffers->occupancyBits;
 	result.asset.occupancyWordCount = result.requiredOccupancyWords;
+	result.asset.materialIds = result.requiredMaterialIds > 0 ? buffers->materialIds : NULL;
+	result.asset.materialIdCount = result.requiredMaterialIds;
+	result.asset.materialTable = config->materialTable != NULL ? config->materialTable : previousAsset->materialTable;
+	result.asset.materialHash = config->materialHash != 0 ? config->materialHash : previousAsset->materialHash;
 	result.asset.featureTypes = buffers->featureTypes;
 	result.asset.normalIndices = buffers->normalIndices;
 	result.asset.corners = buffers->corners;
@@ -1432,6 +1519,28 @@ uint8_t b2PixelAsset_GetFeatureType( const b2PixelAsset* asset, int x, int y )
 	return b2PixelAsset_GetBit( asset, index ) ? b2_pixelFeatureEdge : b2_pixelFeatureEmpty;
 }
 
+int32_t b2PixelAsset_GetMaterialId( const b2PixelAsset* asset, int x, int y )
+{
+	if ( b2IsPixelAssetUsable( asset ) == false || b2PixelIndexInRange( asset, x, y ) == false || asset->materialIds == NULL )
+	{
+		return 0;
+	}
+
+	int index = y * asset->width + x;
+	if ( index < 0 || index >= asset->materialIdCount )
+	{
+		return 0;
+	}
+
+	return asset->materialIds[index];
+}
+
+float b2PixelAsset_GetMaterialDensity( const b2PixelAsset* asset, int x, int y, float fallbackDensity )
+{
+	int32_t materialId = b2PixelAsset_GetMaterialId( asset, x, y );
+	return b2BlastMaterialTable_GetDensity( asset == NULL ? NULL : asset->materialTable, materialId, fallbackDensity );
+}
+
 uint16_t b2PixelAsset_GetFeatureId( const b2PixelAsset* asset, int x, int y )
 {
 	if ( b2IsPixelAssetUsable( asset ) == false || b2PixelIndexInRange( asset, x, y ) == false )
@@ -1480,6 +1589,8 @@ bool b2PixelShape_GetLocalInfo( const b2PixelShape* shape, b2Vec2 localPoint, b2
 		info->x = x;
 		info->y = y;
 		info->index = y * asset->width + x;
+		info->materialId = b2PixelAsset_GetMaterialId( asset, x, y );
+		info->density = b2PixelAsset_GetMaterialDensity( asset, x, y, 1.0f );
 	}
 
 	return true;
@@ -1552,9 +1663,82 @@ b2MassData b2ComputePixelShapeMass( const b2PixelShape* shape, float density )
 	}
 
 	float pixelArea = asset->pixelSize * asset->pixelSize;
-	massData.mass = density * pixelArea * (float)asset->solidCount;
-	massData.center = b2GetPixelShapeCentroid( shape );
-	massData.rotationalInertia = density * asset->rotationalInertia;
+	if ( asset->materialIds == NULL || asset->materialIdCount < asset->width * asset->height || asset->materialTable == NULL )
+	{
+		massData.mass = density * pixelArea * (float)asset->solidCount;
+		massData.center = b2GetPixelShapeCentroid( shape );
+		massData.rotationalInertia = density * asset->rotationalInertia;
+		return massData;
+	}
+
+	float halfWidth = 0.5f * (float)asset->width * asset->pixelSize;
+	float halfHeight = 0.5f * (float)asset->height * asset->pixelSize;
+	float totalMass = 0.0f;
+	b2Vec2 weightedCenter = b2Vec2_zero;
+	for ( int32_t y = 0; y < asset->height; ++y )
+	{
+		int32_t rowStart = y * asset->width;
+		int32_t rowEnd = rowStart + asset->width;
+		int32_t firstWord = rowStart >> 6;
+		int32_t lastWord = ( rowEnd - 1 ) >> 6;
+		for ( int32_t wordIndex = firstWord; wordIndex <= lastWord; ++wordIndex )
+		{
+			int32_t beginBit = wordIndex == firstWord ? rowStart & 63 : 0;
+			int32_t endBit = wordIndex == lastWord ? ( ( rowEnd - 1 ) & 63 ) + 1 : 64;
+			uint64_t word = b2PixelAsset_GetMaskedWord( asset->occupancyBits, asset->occupancyWordCount, wordIndex,
+														b2BitMaskRange64( beginBit, endBit ) );
+			while ( word != 0 )
+			{
+				int32_t bit = b2CountTrailingZeros64( word );
+				int32_t index = ( wordIndex << 6 ) + bit;
+				int32_t x = index - rowStart;
+				float cellDensity = b2BlastMaterialTable_GetDensity( asset->materialTable, asset->materialIds[index], density );
+				float cellMass = cellDensity * pixelArea;
+				b2Vec2 center = { ( (float)x + 0.5f ) * asset->pixelSize - halfWidth + shape->localOrigin.x,
+								  ( (float)y + 0.5f ) * asset->pixelSize - halfHeight + shape->localOrigin.y };
+				totalMass += cellMass;
+				weightedCenter = b2MulAdd( weightedCenter, cellMass, center );
+				word &= word - UINT64_C( 1 );
+			}
+		}
+	}
+
+	if ( totalMass <= 0.0f )
+	{
+		massData.center = shape->localOrigin;
+		return massData;
+	}
+
+	massData.mass = totalMass;
+	massData.center = b2MulSV( 1.0f / totalMass, weightedCenter );
+	float cellInertiaScale = asset->pixelSize * asset->pixelSize / 6.0f;
+	for ( int32_t y = 0; y < asset->height; ++y )
+	{
+		int32_t rowStart = y * asset->width;
+		int32_t rowEnd = rowStart + asset->width;
+		int32_t firstWord = rowStart >> 6;
+		int32_t lastWord = ( rowEnd - 1 ) >> 6;
+		for ( int32_t wordIndex = firstWord; wordIndex <= lastWord; ++wordIndex )
+		{
+			int32_t beginBit = wordIndex == firstWord ? rowStart & 63 : 0;
+			int32_t endBit = wordIndex == lastWord ? ( ( rowEnd - 1 ) & 63 ) + 1 : 64;
+			uint64_t word = b2PixelAsset_GetMaskedWord( asset->occupancyBits, asset->occupancyWordCount, wordIndex,
+														b2BitMaskRange64( beginBit, endBit ) );
+			while ( word != 0 )
+			{
+				int32_t bit = b2CountTrailingZeros64( word );
+				int32_t index = ( wordIndex << 6 ) + bit;
+				int32_t x = index - rowStart;
+				float cellDensity = b2BlastMaterialTable_GetDensity( asset->materialTable, asset->materialIds[index], density );
+				float cellMass = cellDensity * pixelArea;
+				b2Vec2 center = { ( (float)x + 0.5f ) * asset->pixelSize - halfWidth + shape->localOrigin.x,
+								  ( (float)y + 0.5f ) * asset->pixelSize - halfHeight + shape->localOrigin.y };
+				b2Vec2 d = b2Sub( center, massData.center );
+				massData.rotationalInertia += cellMass * ( b2LengthSquared( d ) + cellInertiaScale );
+				word &= word - UINT64_C( 1 );
+			}
+		}
+	}
 	return massData;
 }
 
