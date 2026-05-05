@@ -508,13 +508,18 @@ typedef struct b2PixelFeatureRef
 	uint8_t normalIndex;
 } b2PixelFeatureRef;
 
+/// Blast2D material id stored in PixelShape hot resident data. Host authoring
+/// may use wider ids at boundaries, but PixelShape storage is 16-bit.
+/// @ingroup shape
+typedef uint16_t b2BlastMaterialId;
+
 /// Alchemy's vendored Box2D fork is a Blast2D pixel-physics engine. PixelShape
 /// material physics is intentionally owned by this layer so mass/contact/fracture
 /// rows do not depend on host-side Godot calculations.
 /// @ingroup shape
 typedef struct b2BlastMaterialPhysics
 {
-	int32_t materialId;
+	b2BlastMaterialId materialId;
 	float density;
 	float friction;
 	float restitution;
@@ -536,6 +541,8 @@ typedef struct b2BlastMaterialTable
 {
 	const b2BlastMaterialPhysics* materials;
 	int32_t materialCount;
+	const b2BlastMaterialPhysics* denseMaterials;
+	int32_t denseMaterialCount;
 	uint64_t revision;
 	uint64_t hash;
 } b2BlastMaterialTable;
@@ -555,7 +562,7 @@ typedef struct b2PixelAsset
 	float pixelSize;
 	const uint64_t* occupancyBits;
 	int32_t occupancyWordCount;
-	const int32_t* materialIds;
+	const b2BlastMaterialId* materialIds;
 	int32_t materialIdCount;
 	const b2BlastMaterialTable* materialTable;
 	uint64_t materialHash;
@@ -600,7 +607,7 @@ typedef struct b2PixelAssetBuildConfig
 	float pixelSize;
 	int32_t supportCornerInterval;
 	uint32_t topologyVersion;
-	const int32_t* materialIds;
+	const b2BlastMaterialId* materialIds;
 	int32_t materialIdCount;
 	const b2BlastMaterialTable* materialTable;
 	uint64_t materialHash;
@@ -612,7 +619,7 @@ typedef struct b2PixelAssetBuildBuffers
 {
 	uint64_t* occupancyBits;
 	int32_t occupancyWordCapacity;
-	int32_t* materialIds;
+	b2BlastMaterialId* materialIds;
 	int32_t materialIdCapacity;
 	uint8_t* featureTypes;
 	int32_t featureTypeCapacity;
@@ -661,7 +668,7 @@ typedef struct b2PixelAssetDirtyUpdateConfig
 	float pixelSize;
 	int32_t supportCornerInterval;
 	uint32_t topologyVersion;
-	const int32_t* materialIds;
+	const b2BlastMaterialId* materialIds;
 	int32_t materialIdCount;
 	const b2BlastMaterialTable* materialTable;
 	uint64_t materialHash;
@@ -747,7 +754,7 @@ B2_API bool b2ValidatePixelAsset( const b2PixelAsset* asset );
 
 /// Return the material id stored on a PixelAsset cell, or 0 when no material payload exists.
 /// @ingroup shape
-B2_API int32_t b2PixelAsset_GetMaterialId( const b2PixelAsset* asset, int x, int y );
+B2_API b2BlastMaterialId b2PixelAsset_GetMaterialId( const b2PixelAsset* asset, int x, int y );
 
 /// Return the density resolved from the PixelAsset's Blast2D material table, with fallbackDensity
 /// used when no material payload/table entry is available.
@@ -849,7 +856,7 @@ typedef struct b2FractureShapeContactData
 	uint32_t flags;
 	int64_t rigidbodyId;
 	int64_t actorId;
-	int32_t materialId;
+	b2BlastMaterialId materialId;
 	int32_t surfaceClusterId;
 	int32_t surfaceLeafId;
 	float yieldImpulse;

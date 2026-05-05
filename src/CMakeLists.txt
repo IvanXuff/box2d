@@ -8,6 +8,8 @@ set(BOX2D_SOURCE_FILES
 	array.c
 	array.h
 	atomic.h
+	blast_fracture.c
+	blast_fracture.h
 	bitset.c
 	bitset.h
 	body.c
@@ -67,6 +69,7 @@ set(BOX2D_SOURCE_FILES
 
 set(BOX2D_API_FILES
 	../include/box2d/base.h
+	../include/box2d/blast2d.h
 	../include/box2d/box2d.h
 	../include/box2d/collision.h
 	../include/box2d/constants.h

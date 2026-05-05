@@ -10,6 +10,7 @@
 #include "constraint_graph.h"
 #include "id_pool.h"
 #include "arena_allocator.h"
+#include "blast_fracture.h"
 
 #include "box2d/types.h"
 
@@ -48,6 +49,7 @@ typedef struct b2World
 	b2ArenaAllocator arena;
 	b2BroadPhase broadPhase;
 	b2ConstraintGraph constraintGraph;
+	b2BlastFractureWorld blastFractureWorld;
 
 	// The body id pool is used to allocate and recycle body ids. Body ids
 	// provide a stable identifier for users, but incur caches misses when used

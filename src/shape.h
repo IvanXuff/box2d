@@ -5,6 +5,7 @@
 
 #include "array.h"
 
+#include "box2d/blast2d.h"
 #include "box2d/types.h"
 
 typedef struct b2BroadPhase b2BroadPhase;
@@ -28,6 +29,11 @@ typedef struct b2Shape
 
 	b2Filter filter;
 	void* userData;
+	b2BlastFractureActorId blastActorId;
+	uint32_t blastFlags;
+	uint32_t blastRevision;
+	uint32_t pixelAssetRevision;
+	uint32_t surfaceLookupKey;
 
 	union
 	{

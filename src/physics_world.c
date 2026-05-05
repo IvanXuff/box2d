@@ -131,6 +131,7 @@ b2WorldId b2CreateWorld( const b2WorldDef* def )
 	world->arena = b2CreateArenaAllocator( 2048 );
 	b2CreateBroadPhase( &world->broadPhase );
 	b2CreateGraph( &world->constraintGraph, 16 );
+	b2BlastFractureWorld_Create( &world->blastFractureWorld );
 
 	// pools
 	world->bodyIdPool = b2CreateIdPool();
@@ -351,6 +352,7 @@ void b2DestroyWorld( b2WorldId worldId )
 	b2SolverSetArray_Destroy( &world->solverSets );
 
 	b2DestroyGraph( &world->constraintGraph );
+	b2BlastFractureWorld_Destroy( &world->blastFractureWorld );
 	b2DestroyBroadPhase( &world->broadPhase );
 
 	b2DestroyIdPool( &world->bodyIdPool );
@@ -848,6 +850,14 @@ void b2World_Step( b2WorldId worldId, float timeStep, int subStepCount )
 		uint64_t solveTicks = b2GetTicks();
 		b2Solve( world, &context );
 		world->profile.solve = b2GetMilliseconds( solveTicks );
+	}
+
+	// Blast2D fracture consumes solved contact/joint rows at a world-step safe point.
+	// The solver stays immutable during velocity iterations; topology commands are queued here.
+	{
+		uint64_t blastTicks = b2GetTicks();
+		b2BlastFractureWorld_CollectAndStep( world, timeStep );
+		B2_UNUSED( blastTicks );
 	}
 
 	// Update sensors

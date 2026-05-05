@@ -79,11 +79,20 @@ static bool b2IsPixelAssetUsable( const b2PixelAsset* asset )
 		   b2IsValidFloat( asset->pixelSize );
 }
 
-static const b2BlastMaterialPhysics* b2BlastMaterialTable_Find( const b2BlastMaterialTable* table, int32_t materialId )
+static const b2BlastMaterialPhysics* b2BlastMaterialTable_Find( const b2BlastMaterialTable* table, b2BlastMaterialId materialId )
 {
-	if ( table == NULL || table->materials == NULL || table->materialCount <= 0 || materialId <= 0 )
+	if ( table == NULL || table->materials == NULL || table->materialCount <= 0 || materialId == 0 )
 	{
 		return NULL;
+	}
+
+	if ( table->denseMaterials != NULL && materialId < table->denseMaterialCount )
+	{
+		const b2BlastMaterialPhysics* material = table->denseMaterials + materialId;
+		if ( material->materialId == materialId )
+		{
+			return material;
+		}
 	}
 
 	for ( int32_t i = 0; i < table->materialCount; ++i )
@@ -97,7 +106,7 @@ static const b2BlastMaterialPhysics* b2BlastMaterialTable_Find( const b2BlastMat
 	return NULL;
 }
 
-static float b2BlastMaterialTable_GetDensity( const b2BlastMaterialTable* table, int32_t materialId, float fallbackDensity )
+static float b2BlastMaterialTable_GetDensity( const b2BlastMaterialTable* table, b2BlastMaterialId materialId, float fallbackDensity )
 {
 	const b2BlastMaterialPhysics* material = b2BlastMaterialTable_Find( table, materialId );
 	if ( material == NULL || b2IsValidFloat( material->density ) == false || material->density <= 0.0f )
@@ -979,7 +988,7 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	}
 	if ( result.requiredMaterialIds > 0 )
 	{
-		memcpy( buffers->materialIds, config->materialIds, sizeof( int32_t ) * (size_t)cellCount );
+		memcpy( buffers->materialIds, config->materialIds, sizeof( b2BlastMaterialId ) * (size_t)cellCount );
 	}
 
 	for ( int32_t i = 0; i < cellCount; ++i )
@@ -1155,11 +1164,11 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 	{
 		if ( previousAsset->materialIds != NULL )
 		{
-			memcpy( buffers->materialIds, previousAsset->materialIds, sizeof( int32_t ) * (size_t)cellCount );
+			memcpy( buffers->materialIds, previousAsset->materialIds, sizeof( b2BlastMaterialId ) * (size_t)cellCount );
 		}
 		else
 		{
-			memset( buffers->materialIds, 0, sizeof( int32_t ) * (size_t)cellCount );
+			memset( buffers->materialIds, 0, sizeof( b2BlastMaterialId ) * (size_t)cellCount );
 		}
 		if ( config->materialIds != NULL )
 		{
@@ -1167,7 +1176,7 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 			{
 				int32_t rowStart = y * config->width;
 				memcpy( buffers->materialIds + rowStart + dirtyMinX, config->materialIds + rowStart + dirtyMinX,
-						sizeof( int32_t ) * (size_t)( dirtyMaxX - dirtyMinX ) );
+						sizeof( b2BlastMaterialId ) * (size_t)( dirtyMaxX - dirtyMinX ) );
 			}
 		}
 	}
@@ -1519,7 +1528,7 @@ uint8_t b2PixelAsset_GetFeatureType( const b2PixelAsset* asset, int x, int y )
 	return b2PixelAsset_GetBit( asset, index ) ? b2_pixelFeatureEdge : b2_pixelFeatureEmpty;
 }
 
-int32_t b2PixelAsset_GetMaterialId( const b2PixelAsset* asset, int x, int y )
+b2BlastMaterialId b2PixelAsset_GetMaterialId( const b2PixelAsset* asset, int x, int y )
 {
 	if ( b2IsPixelAssetUsable( asset ) == false || b2PixelIndexInRange( asset, x, y ) == false || asset->materialIds == NULL )
 	{
@@ -1537,7 +1546,7 @@ int32_t b2PixelAsset_GetMaterialId( const b2PixelAsset* asset, int x, int y )
 
 float b2PixelAsset_GetMaterialDensity( const b2PixelAsset* asset, int x, int y, float fallbackDensity )
 {
-	int32_t materialId = b2PixelAsset_GetMaterialId( asset, x, y );
+	b2BlastMaterialId materialId = b2PixelAsset_GetMaterialId( asset, x, y );
 	return b2BlastMaterialTable_GetDensity( asset == NULL ? NULL : asset->materialTable, materialId, fallbackDensity );
 }
 

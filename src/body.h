@@ -5,6 +5,7 @@
 
 #include "array.h"
 
+#include "box2d/blast2d.h"
 #include "box2d/math_functions.h"
 #include "box2d/types.h"
 
@@ -62,6 +63,9 @@ typedef struct b2Body
 	char name[B2_NAME_LENGTH];
 
 	void* userData;
+	b2BlastFractureActorId blastActorId;
+	uint32_t blastFlags;
+	uint32_t blastRevision;
 
 	// index of solver set stored in b2World
 	// may be B2_NULL_INDEX

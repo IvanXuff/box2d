@@ -3,6 +3,7 @@
 
 #include "shape.h"
 
+#include "blast_fracture.h"
 #include "body.h"
 #include "broad_phase.h"
 #include "contact.h"
@@ -94,6 +95,20 @@ static float b2ComputeShapeMargin( b2Shape* shape )
 	return b2MinFloat( B2_MAX_AABB_MARGIN, B2_AABB_MARGIN_FRACTION * margin );
 }
 
+static b2BlastActorMobility b2BlastMobilityFromBodyType( b2BodyType type )
+{
+	switch ( type )
+	{
+		case b2_staticBody:
+			return b2_blastActorMobilityAnchored;
+		case b2_kinematicBody:
+			return b2_blastActorMobilityKinematic;
+		case b2_dynamicBody:
+		default:
+			return b2_blastActorMobilityDynamic;
+	}
+}
+
 static void b2UpdateShapeAABBs( b2Shape* shape, b2Transform transform, b2BodyType proxyType )
 	{
 	// Compute a bounding box with a speculative margin
@@ -179,6 +194,11 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 	shape->material = def->material;
 	shape->filter = def->filter;
 	shape->userData = def->userData;
+	shape->blastActorId = (b2BlastFractureActorId){ UINT32_MAX, 0, world->worldId };
+	shape->blastFlags = 0;
+	shape->blastRevision = 0;
+	shape->pixelAssetRevision = 0;
+	shape->surfaceLookupKey = 0;
 	shape->enlargedAABB = false;
 	shape->enableSensorEvents = def->enableSensorEvents;
 	shape->enableContactEvents = def->enableContactEvents;
@@ -209,6 +229,11 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 	shape->nextShapeId = body->headShapeId;
 	body->headShapeId = shapeId;
 	body->shapeCount += 1;
+
+	if ( shapeType == b2_pixelShape )
+	{
+		b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
+	}
 
 	if ( def->isSensor )
 	{
@@ -314,6 +339,7 @@ b2ShapeId b2CreateSegmentShape( b2BodyId bodyId, const b2ShapeDef* def, const b2
 static void b2DestroyShapeInternal( b2World* world, b2Shape* shape, b2Body* body, bool wakeBodies )
 {
 	int shapeId = shape->id;
+	b2BlastFractureWorld_UnbindShape( world, shape );
 
 	// Remove the shape from the body's doubly linked list.
 	if ( shape->prevShapeId != B2_NULL_INDEX )
@@ -1598,6 +1624,7 @@ bool b2Shape_SetPixelShape( b2ShapeId shapeId, const b2PixelShape* pixel, bool u
 	b2ResetProxy( world, shape, wakeBodies, destroyProxy );
 
 	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
+	b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
 	if ( updateBodyMass )
 	{
 		b2UpdateBodyMassData( world, body );

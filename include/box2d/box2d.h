@@ -4,6 +4,7 @@
 #pragma once
 
 #include "base.h"
+#include "blast2d.h"
 #include "collision.h"
 #include "id.h"
 #include "types.h"
