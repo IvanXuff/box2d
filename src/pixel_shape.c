@@ -175,8 +175,8 @@ bool b2IsPixelShapeUsable( const b2PixelShape* shape )
 	const b2PixelAsset* asset = shape == NULL ? NULL : shape->asset;
 	int32_t cellCount = 0;
 	if ( b2IsPixelAssetUsable( asset ) == false || b2PixelAsset_GetCellCount( asset, &cellCount ) == false ||
-		 asset->occupancyBits == NULL || asset->featureTypes == NULL || asset->normalIndices == NULL ||
-		 asset->corners == NULL || asset->cornerCount <= 0 || ( asset->edgeCount > 0 && asset->edges == NULL ) ||
+		 asset->occupancyBits == NULL || asset->featureTypes == NULL || asset->corners == NULL ||
+		 asset->cornerCount <= 0 || ( asset->edgeCount > 0 && asset->edges == NULL ) ||
 		 asset->solidCount <= 0 || asset->occupancyWordCount < ( cellCount + 63 ) / 64 ||
 		 b2IsValidAABB( asset->occupiedAABB ) == false || b2IsValidVec2( asset->centroid ) == false ||
 		 b2IsValidFloat( asset->rotationalInertia ) == false || asset->rotationalInertia < 0.0f ||
@@ -197,8 +197,8 @@ bool b2ValidatePixelAsset( const b2PixelAsset* asset )
 {
 	int32_t cellCount = 0;
 	if ( b2IsPixelAssetUsable( asset ) == false || b2PixelAsset_GetCellCount( asset, &cellCount ) == false ||
-		 asset->occupancyBits == NULL || asset->featureTypes == NULL || asset->normalIndices == NULL ||
-		 asset->corners == NULL || asset->cornerCount <= 0 || asset->solidCount <= 0 ||
+		 asset->occupancyBits == NULL || asset->featureTypes == NULL || asset->corners == NULL ||
+		 asset->cornerCount <= 0 || asset->solidCount <= 0 ||
 		 b2IsValidAABB( asset->occupiedAABB ) == false || b2IsValidVec2( asset->centroid ) == false ||
 		 b2IsValidFloat( asset->rotationalInertia ) == false || asset->rotationalInertia < 0.0f )
 	{
@@ -254,10 +254,6 @@ bool b2ValidatePixelAsset( const b2PixelAsset* asset )
 			return false;
 		}
 
-		if ( asset->normalIndices[index] != 0 && occupied == false )
-		{
-			return false;
-		}
 	}
 
 	if ( countedSolid != asset->solidCount || countedCorners != asset->cornerCount || countedEdges != asset->edgeCount )
@@ -728,7 +724,6 @@ static bool b2PixelAsset_ReclassifyMarkedCell( const b2PixelAssetDirtyUpdateConf
 	int32_t x = index % config->width;
 	int32_t y = index / config->width;
 	bool occupied = b2SourceOccupancyBit( occupancyBits, occupancyWordCount, index );
-	buffers->normalIndices[index] = 0;
 	if ( occupied == false )
 	{
 		buffers->featureTypes[index] = b2_pixelFeatureEmpty;
@@ -748,7 +743,6 @@ static bool b2PixelAsset_ReclassifyMarkedCell( const b2PixelAssetDirtyUpdateConf
 	feature.y = (int16_t)y;
 	feature.id = (uint16_t)( index + 1 );
 	feature.type = type;
-	feature.normalIndex = buffers->normalIndices[index];
 	if ( type == b2_pixelFeatureCorner )
 	{
 		if ( *cornerCount >= buffers->cornerCapacity )
@@ -801,7 +795,6 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 
 	result.requiredOccupancyWords = ( cellCount + 63 ) / 64;
 	result.requiredFeatureTypes = cellCount;
-	result.requiredNormalIndices = cellCount;
 	result.requiredRowSolidCounts = config->height;
 	result.requiredColSolidCounts = config->width;
 	if ( sourceOccupancyWordCount < result.requiredOccupancyWords )
@@ -949,10 +942,9 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	}
 
 	bool hasCapacity = buffers != NULL && buffers->occupancyBits != NULL && buffers->featureTypes != NULL &&
-					   buffers->normalIndices != NULL && buffers->corners != NULL &&
+					   buffers->corners != NULL &&
 					   buffers->occupancyWordCapacity >= result.requiredOccupancyWords &&
 					   buffers->featureTypeCapacity >= result.requiredFeatureTypes &&
-					   buffers->normalIndexCapacity >= result.requiredNormalIndices &&
 					   buffers->cornerCapacity >= result.requiredCorners &&
 					   ( buffers->rowSolidCounts == NULL || buffers->rowSolidCountCapacity >= result.requiredRowSolidCounts ) &&
 					   ( buffers->colSolidCounts == NULL || buffers->colSolidCountCapacity >= result.requiredColSolidCounts ) &&
@@ -972,7 +964,6 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	for ( int32_t i = 0; i < cellCount; ++i )
 	{
 		buffers->featureTypes[i] = b2_pixelFeatureEmpty;
-		buffers->normalIndices[i] = 0;
 	}
 
 	int32_t cornerCount = 0;
@@ -1005,7 +996,6 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 				feature.y = (int16_t)y;
 				feature.id = (uint16_t)( index + 1 );
 				feature.type = type;
-				feature.normalIndex = 0;
 
 				if ( type == b2_pixelFeatureCorner )
 				{
@@ -1026,7 +1016,6 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 	result.asset.occupancyBits = buffers->occupancyBits;
 	result.asset.occupancyWordCount = result.requiredOccupancyWords;
 	result.asset.featureTypes = buffers->featureTypes;
-	result.asset.normalIndices = buffers->normalIndices;
 	result.asset.corners = buffers->corners;
 	result.asset.cornerCount = cornerCount;
 	result.asset.edges = result.requiredEdges > 0 ? buffers->edges : NULL;
@@ -1064,7 +1053,7 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 		 config->height <= 0 || config->width > INT16_MAX || config->height > INT16_MAX ||
 		 config->width > INT32_MAX / config->height || b2IsValidFloat( config->pixelSize ) == false ||
 		 config->pixelSize <= 0.0f || previousAsset->width != config->width || previousAsset->height != config->height ||
-		 previousAsset->occupancyBits == NULL || previousAsset->featureTypes == NULL || previousAsset->normalIndices == NULL ||
+		 previousAsset->occupancyBits == NULL || previousAsset->featureTypes == NULL ||
 		 previousAsset->rowSolidCounts == NULL || previousAsset->colSolidCounts == NULL ||
 		 previousAsset->rowSolidCount < config->height || previousAsset->colSolidCount < config->width )
 	{
@@ -1081,7 +1070,6 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 
 	result.requiredOccupancyWords = ( cellCount + 63 ) / 64;
 	result.requiredFeatureTypes = cellCount;
-	result.requiredNormalIndices = cellCount;
 	result.requiredRowSolidCounts = config->height;
 	result.requiredColSolidCounts = config->width;
 	if ( updatedOccupancyWordCount < result.requiredOccupancyWords )
@@ -1105,12 +1093,11 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 		return result;
 	}
 
-	bool hasCapacity = buffers->occupancyBits != NULL && buffers->featureTypes != NULL && buffers->normalIndices != NULL &&
+	bool hasCapacity = buffers->occupancyBits != NULL && buffers->featureTypes != NULL &&
 					   buffers->corners != NULL && buffers->rowSolidCounts != NULL && buffers->colSolidCounts != NULL &&
 					   buffers->scratchCells != NULL &&
 					   buffers->occupancyWordCapacity >= result.requiredOccupancyWords &&
 					   buffers->featureTypeCapacity >= result.requiredFeatureTypes &&
-					   buffers->normalIndexCapacity >= result.requiredNormalIndices &&
 					   buffers->cornerCapacity > 0 && buffers->rowSolidCountCapacity >= result.requiredRowSolidCounts &&
 					   buffers->colSolidCountCapacity >= result.requiredColSolidCounts &&
 					   buffers->scratchCellCapacity >= cellCount;
@@ -1122,15 +1109,11 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 
 	memcpy( buffers->occupancyBits, previousAsset->occupancyBits, sizeof( uint64_t ) * (size_t)result.requiredOccupancyWords );
 	memcpy( buffers->featureTypes, previousAsset->featureTypes, sizeof( uint8_t ) * (size_t)cellCount );
-	memcpy( buffers->normalIndices, previousAsset->normalIndices, sizeof( uint8_t ) * (size_t)cellCount );
 	memcpy( buffers->rowSolidCounts, previousAsset->rowSolidCounts, sizeof( int32_t ) * (size_t)config->height );
 	memcpy( buffers->colSolidCounts, previousAsset->colSolidCounts, sizeof( int32_t ) * (size_t)config->width );
-	// Dirty reclassification marks cells in caller-owned scratch memory. Do not reuse normalIndices as marker state;
-	// it is a public asset field and may carry non-zero feature data in a future PixelAsset version.
 	memset( buffers->scratchCells, 0, sizeof( uint8_t ) * (size_t)cellCount );
 	result.dirtyOccupancyWordsCopied = result.requiredOccupancyWords;
 	result.dirtyFeatureCellsCopied = cellCount;
-	result.dirtyNormalCellsCopied = cellCount;
 	result.dirtyRowCountsCopied = config->height;
 	result.dirtyColCountsCopied = config->width;
 	result.dirtyScratchCellsCleared = cellCount;
@@ -1389,7 +1372,6 @@ b2PixelAssetDirtyUpdateResult b2UpdatePixelAssetFromDirtyOccupancy( const b2Pixe
 	result.asset.occupancyBits = buffers->occupancyBits;
 	result.asset.occupancyWordCount = result.requiredOccupancyWords;
 	result.asset.featureTypes = buffers->featureTypes;
-	result.asset.normalIndices = buffers->normalIndices;
 	result.asset.corners = buffers->corners;
 	result.asset.cornerCount = cornerCount;
 	result.asset.edges = edgeCount > 0 ? buffers->edges : NULL;

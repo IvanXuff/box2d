@@ -401,7 +401,6 @@ typedef struct TestPixelAssetStorage
 {
 	uint64_t occupancyBits[2];
 	uint8_t featureTypes[64];
-	uint8_t normalIndices[64];
 	b2PixelFeatureRef corners[64];
 	b2PixelFeatureRef edges[128];
 	b2PixelChunk chunks[16];
@@ -427,8 +426,6 @@ static b2PixelShape BuildTestPixelShape( TestPixelAssetStorage* storage, int wid
 	buffers.occupancyWordCapacity = ARRAY_COUNT( storage->occupancyBits );
 	buffers.featureTypes = storage->featureTypes;
 	buffers.featureTypeCapacity = ARRAY_COUNT( storage->featureTypes );
-	buffers.normalIndices = storage->normalIndices;
-	buffers.normalIndexCapacity = ARRAY_COUNT( storage->normalIndices );
 	buffers.corners = storage->corners;
 	buffers.cornerCapacity = ARRAY_COUNT( storage->corners );
 	buffers.edges = storage->edges;

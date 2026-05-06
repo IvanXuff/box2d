@@ -508,7 +508,6 @@ typedef struct b2PixelFeatureRef
 	int16_t y;
 	uint16_t id;
 	uint8_t type;
-	uint8_t normalIndex;
 } b2PixelFeatureRef;
 
 /// Default pixel disk radius in pixel-size units. A b2PixelShape::diskRadius value of 0 selects this default.
@@ -527,7 +526,6 @@ typedef struct b2PixelAsset
 	const uint64_t* occupancyBits;
 	int32_t occupancyWordCount;
 	const uint8_t* featureTypes;
-	const uint8_t* normalIndices;
 	const b2PixelFeatureRef* corners;
 	int32_t cornerCount;
 	const b2PixelFeatureRef* edges;
@@ -577,8 +575,6 @@ typedef struct b2PixelAssetBuildBuffers
 	int32_t occupancyWordCapacity;
 	uint8_t* featureTypes;
 	int32_t featureTypeCapacity;
-	uint8_t* normalIndices;
-	int32_t normalIndexCapacity;
 	b2PixelFeatureRef* corners;
 	int32_t cornerCapacity;
 	b2PixelFeatureRef* edges;
@@ -599,7 +595,6 @@ typedef struct b2PixelAssetBuildResult
 	b2PixelAsset asset;
 	int32_t requiredOccupancyWords;
 	int32_t requiredFeatureTypes;
-	int32_t requiredNormalIndices;
 	int32_t requiredCorners;
 	int32_t requiredEdges;
 	int32_t requiredRowSolidCounts;
@@ -634,7 +629,6 @@ typedef struct b2PixelAssetDirtyUpdateResult
 	b2PixelAsset asset;
 	int32_t requiredOccupancyWords;
 	int32_t requiredFeatureTypes;
-	int32_t requiredNormalIndices;
 	int32_t requiredCorners;
 	int32_t requiredEdges;
 	int32_t requiredRowSolidCounts;
@@ -642,7 +636,6 @@ typedef struct b2PixelAssetDirtyUpdateResult
 	int32_t dirtyCellsScanned;
 	int32_t dirtyOccupancyWordsCopied;
 	int32_t dirtyFeatureCellsCopied;
-	int32_t dirtyNormalCellsCopied;
 	int32_t dirtyRowCountsCopied;
 	int32_t dirtyColCountsCopied;
 	int32_t dirtyScratchCellsCleared;
