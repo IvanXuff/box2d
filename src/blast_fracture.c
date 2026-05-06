@@ -1520,6 +1520,162 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 	return true;
 }
 
+typedef struct b2BlastSavedBondState
+{
+	uint32_t leafA;
+	uint32_t leafB;
+	float damage;
+	uint16_t flags;
+} b2BlastSavedBondState;
+
+static bool b2BlastCellInDirtyRect( int cell, int width, int dirtyX, int dirtyY, int dirtyWidth, int dirtyHeight )
+{
+	if ( width <= 0 )
+	{
+		return true;
+	}
+	int x = cell % width;
+	int y = cell / width;
+	return x >= dirtyX && y >= dirtyY && x < dirtyX + dirtyWidth && y < dirtyY + dirtyHeight;
+}
+
+static bool b2BlastActor_RepairFromPixelShapeDirtyUpdate( b2BlastActor* actor, b2Shape* shape )
+{
+	if ( actor == NULL || shape == NULL || shape->type != b2_pixelShape || b2IsPixelShapeUsable( &shape->pixel ) == false ||
+		 actor->cellToLeafCount <= 0 || actor->leafCount <= 0 )
+	{
+		return b2BlastActor_AuthorFromPixelShape( actor, shape );
+	}
+
+	const b2PixelAsset* asset = shape->pixel.asset;
+	const int oldWidth = actor->ownedAsset.width;
+	const int oldHeight = actor->ownedAsset.height;
+	const int oldCellCount = actor->cellToLeafCount;
+	const int newCellCount = asset->width * asset->height;
+	if ( oldWidth != asset->width || oldHeight != asset->height || oldCellCount != newCellCount ||
+		 shape->pixel.dirtyWidth <= 0 || shape->pixel.dirtyHeight <= 0 )
+	{
+		return b2BlastActor_AuthorFromPixelShape( actor, shape );
+	}
+
+	const int oldLeafCount = actor->leafCount;
+	const int oldBondCount = actor->bondCount;
+	int32_t* oldLeafRepresentativeCells = b2AllocZeroInit( oldLeafCount * (int)sizeof( int32_t ) );
+	b2BlastSavedBondState* oldBondStates = b2AllocZeroInit( oldBondCount * (int)sizeof( b2BlastSavedBondState ) );
+	if ( oldLeafRepresentativeCells == NULL || ( oldBondCount > 0 && oldBondStates == NULL ) )
+	{
+		b2Free( oldLeafRepresentativeCells, oldLeafCount * (int)sizeof( int32_t ) );
+		b2Free( oldBondStates, oldBondCount * (int)sizeof( b2BlastSavedBondState ) );
+		return b2BlastActor_AuthorFromPixelShape( actor, shape );
+	}
+
+	for ( int i = 0; i < oldLeafCount; ++i )
+	{
+		oldLeafRepresentativeCells[i] = -1;
+	}
+
+	const int dirtyX = b2ClampInt( shape->pixel.dirtyX, 0, oldWidth );
+	const int dirtyY = b2ClampInt( shape->pixel.dirtyY, 0, oldHeight );
+	const int dirtyWidth = b2ClampInt( shape->pixel.dirtyWidth, 0, oldWidth - dirtyX );
+	const int dirtyHeight = b2ClampInt( shape->pixel.dirtyHeight, 0, oldHeight - dirtyY );
+	for ( int cell = 0; cell < oldCellCount; ++cell )
+	{
+		uint32_t leaf = actor->cellToLeaf[cell];
+		if ( leaf == UINT32_MAX || leaf >= (uint32_t)oldLeafCount )
+		{
+			continue;
+		}
+		if ( oldLeafRepresentativeCells[leaf] >= 0 &&
+			 b2BlastCellInDirtyRect( oldLeafRepresentativeCells[leaf], oldWidth, dirtyX, dirtyY, dirtyWidth, dirtyHeight ) == false )
+		{
+			continue;
+		}
+		if ( b2BlastCellInDirtyRect( cell, oldWidth, dirtyX, dirtyY, dirtyWidth, dirtyHeight ) == false ||
+			 oldLeafRepresentativeCells[leaf] < 0 )
+		{
+			oldLeafRepresentativeCells[leaf] = cell;
+		}
+	}
+
+	for ( int i = 0; i < oldBondCount; ++i )
+	{
+		const b2BlastActiveBond* oldBond = actor->bonds + i;
+		oldBondStates[i].leafA = oldBond->leafA;
+		oldBondStates[i].leafB = oldBond->leafB;
+		oldBondStates[i].damage = oldBond->damage;
+		oldBondStates[i].flags = oldBond->flags;
+	}
+
+	const bool authored = b2BlastActor_AuthorFromPixelShape( actor, shape );
+	if ( authored == false )
+	{
+		b2Free( oldLeafRepresentativeCells, oldLeafCount * (int)sizeof( int32_t ) );
+		b2Free( oldBondStates, oldBondCount * (int)sizeof( b2BlastSavedBondState ) );
+		return false;
+	}
+
+	if ( actor->leafRemapScratchCapacity < oldLeafCount )
+	{
+		actor->leafRemapScratch =
+			b2BlastResize( actor->leafRemapScratch, actor->leafRemapScratchCapacity, oldLeafCount, (int)sizeof( uint32_t ) );
+		actor->leafRemapScratchCapacity = oldLeafCount;
+	}
+	if ( actor->leafRemapScratch != NULL )
+	{
+		for ( int oldLeaf = 0; oldLeaf < oldLeafCount; ++oldLeaf )
+		{
+			actor->leafRemapScratch[oldLeaf] = UINT32_MAX;
+			const int cell = oldLeafRepresentativeCells[oldLeaf];
+			if ( cell < 0 || cell >= actor->cellToLeafCount || b2PixelAsset_IsOccupied( asset, cell % oldWidth, cell / oldWidth ) == false )
+			{
+				continue;
+			}
+			const uint32_t newLeaf = actor->cellToLeaf[cell];
+			if ( newLeaf != UINT32_MAX && newLeaf < (uint32_t)actor->leafCount )
+			{
+				actor->leafRemapScratch[oldLeaf] = newLeaf;
+			}
+		}
+
+		for ( int oldBond = 0; oldBond < oldBondCount; ++oldBond )
+		{
+			const b2BlastSavedBondState* saved = oldBondStates + oldBond;
+			if ( saved->leafA >= (uint32_t)oldLeafCount || saved->leafB >= (uint32_t)oldLeafCount )
+			{
+				continue;
+			}
+			uint32_t newA = actor->leafRemapScratch[saved->leafA];
+			uint32_t newB = actor->leafRemapScratch[saved->leafB];
+			if ( newA == UINT32_MAX || newB == UINT32_MAX || newA == newB )
+			{
+				continue;
+			}
+			if ( newB < newA )
+			{
+				uint32_t tmp = newA;
+				newA = newB;
+				newB = tmp;
+			}
+			for ( int newBond = 0; newBond < actor->bondCount; ++newBond )
+			{
+				b2BlastActiveBond* bond = actor->bonds + newBond;
+				if ( bond->leafA != newA || bond->leafB != newB )
+				{
+					continue;
+				}
+				bond->damage = b2MaxFloat( bond->damage, saved->damage );
+				const uint16_t persistentFlags = saved->flags & ( b2_blastBondFlagBroken | b2_blastBondFlagBreakCandidate );
+				bond->flags |= persistentFlags;
+				break;
+			}
+		}
+	}
+
+	b2Free( oldLeafRepresentativeCells, oldLeafCount * (int)sizeof( int32_t ) );
+	b2Free( oldBondStates, oldBondCount * (int)sizeof( b2BlastSavedBondState ) );
+	return true;
+}
+
 void b2BlastFractureWorld_Create( b2BlastFractureWorld* fractureWorld )
 {
 	*fractureWorld = (b2BlastFractureWorld){ 0 };
@@ -1628,7 +1784,10 @@ b2BlastFractureActorId b2BlastFractureWorld_UpsertPixelShapeActor(
 	if ( localOriginOnly == false )
 	{
 		actor->flags &= (uint32_t)~b2_blastActorFlagOwnsWorldAnchor;
-		if ( b2BlastActor_AuthorFromPixelShape( actor, shape ) == false )
+		const bool dirtyRepair = existingActor && updateKind == b2_pixelShapeUpdateDirtyUpdate;
+		const bool authored = dirtyRepair ? b2BlastActor_RepairFromPixelShapeDirtyUpdate( actor, shape )
+										  : b2BlastActor_AuthorFromPixelShape( actor, shape );
+		if ( authored == false )
 		{
 			fractureWorld->reauthoredFallbackCount += 1;
 		}
