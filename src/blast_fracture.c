@@ -723,6 +723,39 @@ static uint32_t b2BlastFloatBits( float value )
 	return bits;
 }
 
+static uint64_t b2BlastComputeActorHash( const b2BlastActor* actor )
+{
+	if ( actor == NULL )
+	{
+		return 0;
+	}
+
+	const b2PixelAsset* asset = &actor->ownedAsset;
+	uint64_t hash = 14695981039346656037ULL;
+	hash = b2BlastMixHash( hash, (uint64_t)b2MaxInt( 0, asset->width ) );
+	hash = b2BlastMixHash( hash, (uint64_t)b2MaxInt( 0, asset->height ) );
+	hash = b2BlastMixHash( hash, (uint64_t)actor->leafCount );
+	hash = b2BlastMixHash( hash, (uint64_t)actor->bondCount );
+	hash = b2BlastMixHash( hash, (uint64_t)actor->clusterCount );
+	hash = b2BlastMixHash( hash, actor->materialHash != 0 ? actor->materialHash : asset->materialHash );
+	for ( int i = 0; i < actor->leafCount; ++i )
+	{
+		const b2BlastLeaf* leaf = actor->leaves + i;
+		hash = b2BlastMixHash( hash, leaf->cellCount );
+		hash = b2BlastMixHash( hash, leaf->dominantMaterialId );
+		hash = b2BlastMixHash( hash, b2BlastFloatBits( leaf->centroid.x ) );
+		hash = b2BlastMixHash( hash, b2BlastFloatBits( leaf->centroid.y ) );
+	}
+	for ( int i = 0; i < actor->bondCount; ++i )
+	{
+		const b2BlastActiveBond* bond = actor->bonds + i;
+		hash = b2BlastMixHash( hash, ( (uint64_t)bond->leafA << 32 ) | bond->leafB );
+		hash = b2BlastMixHash( hash, b2BlastFloatBits( bond->area ) );
+		hash = b2BlastMixHash( hash, b2BlastFloatBits( bond->capacity ) );
+	}
+	return hash;
+}
+
 static b2Vec2 b2BlastCellCenter( const b2PixelAsset* asset, const b2Shape* shape, int x, int y )
 {
 	float halfWidth = 0.5f * (float)asset->width * asset->pixelSize;
@@ -4073,6 +4106,549 @@ static bool b2BlastBuildTransitionPixelAsset( b2BlastActor* child, const b2Blast
 	return true;
 }
 
+static void b2BlastActor_ActivateLeafGraphForTransitionChild( b2BlastActor* child )
+{
+	if ( child == NULL || child->leafCount <= 0 )
+	{
+		return;
+	}
+
+	child->activeClusterCount = 0;
+	child->initialActiveLevel = 0;
+	for ( int leafIndex = 0; leafIndex < child->leafCount; ++leafIndex )
+	{
+		const b2BlastLeaf* leaf = child->leaves + leafIndex;
+		if ( leaf->cellCount <= 0 )
+		{
+			continue;
+		}
+		(void)b2BlastActor_AddActiveCluster( child, (uint32_t)leafIndex );
+	}
+	b2BlastActor_SortUniqueActiveClusters( child );
+}
+
+static void b2BlastCluster_RecomputeFromLeaves( b2BlastActor* actor, b2BlastCluster* cluster )
+{
+	if ( actor == NULL || cluster == NULL || cluster->firstLeaf == UINT32_MAX ||
+		 cluster->firstLeaf + cluster->leafCount > (uint32_t)actor->clusterLeafRefCount )
+	{
+		return;
+	}
+
+	cluster->minX = UINT16_MAX;
+	cluster->minY = UINT16_MAX;
+	cluster->maxX = 0;
+	cluster->maxY = 0;
+	cluster->centroid = b2Vec2_zero;
+	cluster->mass = 0.0f;
+	cluster->flags = 0;
+	for ( uint32_t ref = 0; ref < cluster->leafCount; ++ref )
+	{
+		const uint32_t leafIndex = actor->clusterLeaves[cluster->firstLeaf + ref];
+		if ( leafIndex >= (uint32_t)actor->leafCount )
+		{
+			continue;
+		}
+		const b2BlastLeaf* leaf = actor->leaves + leafIndex;
+		if ( leaf->cellCount == 0 )
+		{
+			continue;
+		}
+		cluster->minX = (uint16_t)b2MinInt( cluster->minX, leaf->minX );
+		cluster->minY = (uint16_t)b2MinInt( cluster->minY, leaf->minY );
+		cluster->maxX = (uint16_t)b2MaxInt( cluster->maxX, leaf->maxX );
+		cluster->maxY = (uint16_t)b2MaxInt( cluster->maxY, leaf->maxY );
+		cluster->mass += leaf->mass;
+		cluster->centroid.x += leaf->centroid.x * leaf->mass;
+		cluster->centroid.y += leaf->centroid.y * leaf->mass;
+	}
+	if ( cluster->mass > 0.0f )
+	{
+		cluster->centroid.x /= cluster->mass;
+		cluster->centroid.y /= cluster->mass;
+	}
+}
+
+static b2BlastActiveBond* b2BlastActor_FindBondByLeaves( b2BlastActor* actor, uint32_t leafA, uint32_t leafB )
+{
+	if ( actor == NULL || leafA == leafB )
+	{
+		return NULL;
+	}
+	if ( leafB < leafA )
+	{
+		uint32_t temp = leafA;
+		leafA = leafB;
+		leafB = temp;
+	}
+	for ( int bondIndex = 0; bondIndex < actor->bondCount; ++bondIndex )
+	{
+		b2BlastActiveBond* bond = actor->bonds + bondIndex;
+		if ( bond->leafA == leafA && bond->leafB == leafB )
+		{
+			return bond;
+		}
+	}
+	return NULL;
+}
+
+static bool b2BlastActor_MigrateTransitionChildGraphFromSource( b2BlastActor* child, const b2BlastActor* source,
+															   const b2Shape* childShape,
+															   const b2BlastActorTransition* transition,
+															   const int32_t* transitionCells )
+{
+	if ( child == NULL || source == NULL || childShape == NULL || childShape->type != b2_pixelShape ||
+		 b2IsPixelShapeUsable( &childShape->pixel ) == false || transition == NULL || transitionCells == NULL ||
+		 transition->cellCount <= 0 || source->cellToLeaf == NULL || source->leafCount <= 0 )
+	{
+		return false;
+	}
+
+	const b2PixelAsset* childAsset = childShape->pixel.asset;
+	const int childWidth = childAsset->width;
+	const int childHeight = childAsset->height;
+	const int childCellCount = childWidth * childHeight;
+	if ( childWidth <= 0 || childHeight <= 0 || childCellCount <= 0 )
+	{
+		return false;
+	}
+
+	const int maxLeaves = b2MaxInt( 1, childAsset->solidCount );
+	const int maxBonds = b2MaxInt( 1, source->bondCount + childAsset->solidCount * 2 );
+	const int maxClusters = b2MaxInt( maxLeaves + source->clusterCount + 1, maxLeaves * 2 + 8 );
+	const int maxClusterRefs = b2MaxInt( maxClusters * 4, source->clusterLeafRefCount + source->clusterChildCount + maxLeaves );
+	const int remapCapacity = b2MaxInt( source->leafCount, maxLeaves );
+	b2BlastEnsureActorCapacity( child, maxLeaves, maxBonds, maxClusters, maxClusterRefs, childCellCount, remapCapacity );
+	if ( child->leafRemapScratchCapacity < source->leafCount || child->cellToLeafCapacity < childCellCount )
+	{
+		return false;
+	}
+
+	for ( int i = 0; i < source->leafCount; ++i )
+	{
+		child->leafRemapScratch[i] = UINT32_MAX;
+	}
+	for ( int cell = 0; cell < childCellCount; ++cell )
+	{
+		child->cellToLeaf[cell] = UINT32_MAX;
+	}
+
+	child->leafCount = 0;
+	child->bondCount = 0;
+	child->clusterCount = 0;
+	child->clusterChildCount = 0;
+	child->clusterLeafRefCount = 0;
+	child->activeClusterCount = 0;
+	child->worldAnchorCount = 0;
+	child->flags &= (uint32_t)~b2_blastActorFlagOwnsWorldAnchor;
+	child->rootCluster = UINT32_MAX;
+	child->cellToLeafCount = childCellCount;
+
+	for ( int i = 0; i < transition->cellCount; ++i )
+	{
+		const int sourceCell = transitionCells[transition->cellOffset + i];
+		if ( sourceCell < 0 || sourceCell >= source->cellToLeafCount )
+		{
+			continue;
+		}
+		const uint32_t sourceLeaf = source->cellToLeaf[sourceCell];
+		if ( sourceLeaf == UINT32_MAX || sourceLeaf >= (uint32_t)source->leafCount )
+		{
+			continue;
+		}
+		if ( child->leafRemapScratch[sourceLeaf] == UINT32_MAX )
+		{
+			if ( child->leafCount >= child->leafCapacity )
+			{
+				return false;
+			}
+			const uint32_t childLeaf = (uint32_t)child->leafCount++;
+			child->leafRemapScratch[sourceLeaf] = childLeaf;
+			child->leaves[childLeaf] = (b2BlastLeaf){ 0 };
+			child->leaves[childLeaf].dominantMaterialId = source->leaves[sourceLeaf].dominantMaterialId;
+			child->leaves[childLeaf].firstCell = UINT32_MAX;
+			child->leaves[childLeaf].firstBond = UINT32_MAX;
+			child->leaves[childLeaf].minX = UINT16_MAX;
+			child->leaves[childLeaf].minY = UINT16_MAX;
+		}
+
+		const int sx = sourceCell % transition->sourceWidth;
+		const int sy = sourceCell / transition->sourceWidth;
+		const int cx = sx - transition->sourceMinX;
+		const int cy = sy - transition->sourceMinY;
+		if ( cx < 0 || cy < 0 || cx >= childWidth || cy >= childHeight )
+		{
+			continue;
+		}
+		child->cellToLeaf[cy * childWidth + cx] = child->leafRemapScratch[sourceLeaf];
+	}
+	if ( child->leafCount <= 0 )
+	{
+		return false;
+	}
+
+	const float cellArea = childAsset->pixelSize * childAsset->pixelSize;
+	for ( int leafIndex = 0; leafIndex < child->leafCount; ++leafIndex )
+	{
+		b2BlastLeaf* leaf = child->leaves + leafIndex;
+		const b2BlastMaterialId preservedMaterial = leaf->dominantMaterialId;
+		*leaf = (b2BlastLeaf){ 0 };
+		leaf->dominantMaterialId = preservedMaterial;
+		leaf->firstCell = UINT32_MAX;
+		leaf->firstBond = UINT32_MAX;
+		leaf->minX = UINT16_MAX;
+		leaf->minY = UINT16_MAX;
+		uint32_t materialVotes[8] = { 0 };
+		b2BlastMaterialId materialVoteIds[8] = { 0 };
+		float cx = 0.0f;
+		float cy = 0.0f;
+		float mass = 0.0f;
+		for ( int cell = 0; cell < childCellCount; ++cell )
+		{
+			if ( child->cellToLeaf[cell] != (uint32_t)leafIndex )
+			{
+				continue;
+			}
+			const int x = cell % childWidth;
+			const int y = cell / childWidth;
+			if ( b2PixelAsset_IsOccupied( childAsset, x, y ) == false )
+			{
+				child->cellToLeaf[cell] = UINT32_MAX;
+				continue;
+			}
+			b2BlastMaterialId materialId = b2PixelAsset_GetMaterialId( childAsset, x, y );
+			float cellMass = b2BlastMaterialDensity( childAsset, materialId, childShape->density ) * cellArea;
+			b2Vec2 center = b2BlastCellCenter( childAsset, childShape, x, y );
+			cx += center.x * cellMass;
+			cy += center.y * cellMass;
+			mass += cellMass;
+			leaf->cellCount += 1;
+			leaf->firstCell = leaf->firstCell == UINT32_MAX ? (uint32_t)cell : leaf->firstCell;
+			leaf->minX = (uint16_t)b2MinInt( leaf->minX, x );
+			leaf->minY = (uint16_t)b2MinInt( leaf->minY, y );
+			leaf->maxX = (uint16_t)b2MaxInt( leaf->maxX, x );
+			leaf->maxY = (uint16_t)b2MaxInt( leaf->maxY, y );
+			bool voted = false;
+			for ( int vote = 0; vote < 8; ++vote )
+			{
+				if ( materialVotes[vote] > 0 && materialVoteIds[vote] == materialId )
+				{
+					materialVotes[vote] += 1;
+					voted = true;
+					break;
+				}
+			}
+			if ( voted == false )
+			{
+				for ( int vote = 0; vote < 8; ++vote )
+				{
+					if ( materialVotes[vote] == 0 )
+					{
+						materialVoteIds[vote] = materialId;
+						materialVotes[vote] = 1;
+						break;
+					}
+				}
+			}
+		}
+		if ( leaf->cellCount == 0 )
+		{
+			return false;
+		}
+		uint32_t bestVotes = 0;
+		for ( int vote = 0; vote < 8; ++vote )
+		{
+			if ( materialVotes[vote] > bestVotes )
+			{
+				bestVotes = materialVotes[vote];
+				leaf->dominantMaterialId = materialVoteIds[vote];
+			}
+		}
+		leaf->mass = mass;
+		leaf->centroid = mass > 0.0f ? (b2Vec2){ cx / mass, cy / mass } : b2Vec2_zero;
+	}
+
+	for ( int sourceBondIndex = 0; sourceBondIndex < source->bondCount; ++sourceBondIndex )
+	{
+		const b2BlastActiveBond* sourceBond = source->bonds + sourceBondIndex;
+		if ( sourceBond->leafA >= (uint32_t)source->leafCount || sourceBond->leafB >= (uint32_t)source->leafCount )
+		{
+			continue;
+		}
+		uint32_t leafA = child->leafRemapScratch[sourceBond->leafA];
+		uint32_t leafB = child->leafRemapScratch[sourceBond->leafB];
+		if ( leafA == UINT32_MAX || leafB == UINT32_MAX || leafA == leafB )
+		{
+			continue;
+		}
+		if ( leafB < leafA )
+		{
+			uint32_t temp = leafA;
+			leafA = leafB;
+			leafB = temp;
+		}
+		if ( child->bondCount >= child->bondCapacity )
+		{
+			return false;
+		}
+		b2BlastActiveBond bond = *sourceBond;
+		bond.leafA = leafA;
+		bond.leafB = leafB;
+		bond.clusterA = leafA;
+		bond.clusterB = leafB;
+		bond.area = 0.0f;
+		child->bonds[child->bondCount++] = bond;
+	}
+
+	for ( int y = 0; y < childHeight; ++y )
+	{
+		for ( int x = 0; x < childWidth; ++x )
+		{
+			const int indexA = y * childWidth + x;
+			if ( child->cellToLeaf[indexA] == UINT32_MAX )
+			{
+				continue;
+			}
+			const int nx[2] = { x + 1, x };
+			const int ny[2] = { y, y + 1 };
+			for ( int dir = 0; dir < 2; ++dir )
+			{
+				if ( nx[dir] >= childWidth || ny[dir] >= childHeight )
+				{
+					continue;
+				}
+				const int indexB = ny[dir] * childWidth + nx[dir];
+				uint32_t leafA = child->cellToLeaf[indexA];
+				uint32_t leafB = child->cellToLeaf[indexB];
+				if ( leafB == UINT32_MAX || leafA == leafB )
+				{
+					continue;
+				}
+				if ( leafB < leafA )
+				{
+					uint32_t temp = leafA;
+					leafA = leafB;
+					leafB = temp;
+				}
+				b2BlastActiveBond* bond = b2BlastActor_FindBondByLeaves( child, leafA, leafB );
+				if ( bond == NULL )
+				{
+					if ( child->bondCount >= child->bondCapacity )
+					{
+						return false;
+					}
+					bond = child->bonds + child->bondCount++;
+					*bond = (b2BlastActiveBond){ 0 };
+					bond->leafA = leafA;
+					bond->leafB = leafB;
+					bond->clusterA = leafA;
+					bond->clusterB = leafB;
+					bond->materialMix =
+						child->leaves[leafA].dominantMaterialId == child->leaves[leafB].dominantMaterialId ? 0 : 1;
+				}
+				bond->area += childAsset->pixelSize;
+			}
+		}
+	}
+
+	for ( int bondIndex = 0; bondIndex < child->bondCount; ++bondIndex )
+	{
+		b2BlastActiveBond* bond = child->bonds + bondIndex;
+		if ( bond->leafA >= (uint32_t)child->leafCount || bond->leafB >= (uint32_t)child->leafCount )
+		{
+			continue;
+		}
+		if ( bond->area > 0.0f )
+		{
+			b2BlastMaterialId materialA = child->leaves[bond->leafA].dominantMaterialId;
+			b2BlastMaterialId materialB = child->leaves[bond->leafB].dominantMaterialId;
+			bond->capacity = b2BlastBondCapacity( childAsset, materialA, materialB, bond->area );
+			bond->toughness = b2MaxFloat( bond->toughness, 0.45f * bond->capacity );
+			bond->propagationWeight = 1.0f / b2MaxFloat( 1.0f, bond->area );
+		}
+		bond->damage = b2ClampFloat( bond->damage, 0.0f, 1.5f );
+		bond->clusterA = bond->leafA;
+		bond->clusterB = bond->leafB;
+	}
+
+	for ( int leafIndex = 0; leafIndex < child->leafCount; ++leafIndex )
+	{
+		child->leaves[leafIndex].firstBond = UINT32_MAX;
+		child->leaves[leafIndex].bondCount = 0;
+	}
+	for ( int bondIndex = 0; bondIndex < child->bondCount; ++bondIndex )
+	{
+		b2BlastActiveBond* bond = child->bonds + bondIndex;
+		if ( bond->leafA >= (uint32_t)child->leafCount || bond->leafB >= (uint32_t)child->leafCount )
+		{
+			continue;
+		}
+		b2BlastLeaf* a = child->leaves + bond->leafA;
+		b2BlastLeaf* b = child->leaves + bond->leafB;
+		a->firstBond = a->firstBond == UINT32_MAX ? (uint32_t)bondIndex : (uint32_t)b2MinInt( (int)a->firstBond, bondIndex );
+		b->firstBond = b->firstBond == UINT32_MAX ? (uint32_t)bondIndex : (uint32_t)b2MinInt( (int)b->firstBond, bondIndex );
+		a->bondCount += 1;
+		b->bondCount += 1;
+	}
+
+	uint32_t* clusterRemap = NULL;
+	if ( source->clusterCount > 0 )
+	{
+		clusterRemap = b2AllocZeroInit( source->clusterCount * (int)sizeof( uint32_t ) );
+	}
+	if ( clusterRemap == NULL )
+	{
+		return false;
+	}
+	for ( int i = 0; i < source->clusterCount; ++i )
+	{
+		clusterRemap[i] = UINT32_MAX;
+	}
+
+	child->clusterCount = 0;
+	child->clusterChildCount = 0;
+	child->clusterLeafRefCount = 0;
+	for ( int leafIndex = 0; leafIndex < child->leafCount; ++leafIndex )
+	{
+		if ( child->clusterCount >= child->clusterCapacity || child->clusterLeafRefCount >= child->clusterLeafRefCapacity )
+		{
+			b2Free( clusterRemap, source->clusterCount * (int)sizeof( uint32_t ) );
+			return false;
+		}
+		b2BlastCluster cluster = { 0 };
+		cluster.id = (uint32_t)child->clusterCount;
+		cluster.parent = UINT32_MAX;
+		cluster.firstChild = UINT32_MAX;
+		cluster.firstLeaf = (uint32_t)child->clusterLeafRefCount;
+		cluster.leafCount = 1;
+		cluster.level = 0;
+		child->clusterLeaves[child->clusterLeafRefCount++] = (uint32_t)leafIndex;
+		b2BlastCluster_RecomputeFromLeaves( child, &cluster );
+		child->clusters[child->clusterCount++] = cluster;
+	}
+	for ( int sourceLeaf = 0; sourceLeaf < source->leafCount && sourceLeaf < source->clusterCount; ++sourceLeaf )
+	{
+		if ( child->leafRemapScratch[sourceLeaf] != UINT32_MAX )
+		{
+			clusterRemap[sourceLeaf] = child->leafRemapScratch[sourceLeaf];
+		}
+	}
+
+	for ( int sourceClusterIndex = 0; sourceClusterIndex < source->clusterCount; ++sourceClusterIndex )
+	{
+		const b2BlastCluster* sourceCluster = source->clusters + sourceClusterIndex;
+		if ( sourceCluster->level == 0 || sourceCluster->firstLeaf == UINT32_MAX ||
+			 sourceCluster->firstLeaf + sourceCluster->leafCount > (uint32_t)source->clusterLeafRefCount )
+		{
+			continue;
+		}
+		const int leafStart = child->clusterLeafRefCount;
+		for ( uint32_t ref = 0; ref < sourceCluster->leafCount; ++ref )
+		{
+			const uint32_t sourceLeaf = source->clusterLeaves[sourceCluster->firstLeaf + ref];
+			if ( sourceLeaf < (uint32_t)source->leafCount && child->leafRemapScratch[sourceLeaf] != UINT32_MAX )
+			{
+				if ( child->clusterLeafRefCount >= child->clusterLeafRefCapacity )
+				{
+					b2Free( clusterRemap, source->clusterCount * (int)sizeof( uint32_t ) );
+					return false;
+				}
+				child->clusterLeaves[child->clusterLeafRefCount++] = child->leafRemapScratch[sourceLeaf];
+			}
+		}
+		const int leafCount = child->clusterLeafRefCount - leafStart;
+		if ( leafCount <= 0 )
+		{
+			child->clusterLeafRefCount = leafStart;
+			continue;
+		}
+		if ( child->clusterCount >= child->clusterCapacity )
+		{
+			b2Free( clusterRemap, source->clusterCount * (int)sizeof( uint32_t ) );
+			return false;
+		}
+
+		b2BlastCluster cluster = { 0 };
+		cluster.id = (uint32_t)child->clusterCount;
+		cluster.parent = UINT32_MAX;
+		cluster.firstChild = UINT32_MAX;
+		cluster.firstLeaf = (uint32_t)leafStart;
+		cluster.leafCount = (uint32_t)leafCount;
+		cluster.level = sourceCluster->level;
+		if ( sourceCluster->childCount > 0 && sourceCluster->firstChild != UINT32_MAX )
+		{
+			const int childStart = child->clusterChildCount;
+			for ( uint32_t childRef = 0; childRef < sourceCluster->childCount; ++childRef )
+			{
+				if ( sourceCluster->firstChild + childRef >= (uint32_t)source->clusterChildCount )
+				{
+					continue;
+				}
+				const uint32_t sourceChildCluster = source->clusterChildren[sourceCluster->firstChild + childRef];
+				if ( sourceChildCluster < (uint32_t)source->clusterCount && clusterRemap[sourceChildCluster] != UINT32_MAX )
+				{
+					if ( child->clusterChildCount >= child->clusterChildCapacity )
+					{
+						b2Free( clusterRemap, source->clusterCount * (int)sizeof( uint32_t ) );
+						return false;
+					}
+					const uint32_t childCluster = clusterRemap[sourceChildCluster];
+					child->clusterChildren[child->clusterChildCount++] = childCluster;
+					if ( childCluster < (uint32_t)child->clusterCount )
+					{
+						child->clusters[childCluster].parent = cluster.id;
+					}
+				}
+			}
+			if ( child->clusterChildCount > childStart )
+			{
+				cluster.firstChild = (uint32_t)childStart;
+				cluster.childCount = (uint32_t)( child->clusterChildCount - childStart );
+			}
+		}
+		b2BlastCluster_RecomputeFromLeaves( child, &cluster );
+		child->clusters[child->clusterCount++] = cluster;
+		if ( sourceCluster->id < (uint32_t)source->clusterCount )
+		{
+			clusterRemap[sourceCluster->id] = cluster.id;
+		}
+	}
+
+	child->rootCluster = UINT32_MAX;
+	if ( source->rootCluster < (uint32_t)source->clusterCount && clusterRemap[source->rootCluster] != UINT32_MAX )
+	{
+		child->rootCluster = clusterRemap[source->rootCluster];
+	}
+	else if ( child->clusterCount > 0 )
+	{
+		child->rootCluster = child->clusters[child->clusterCount - 1].id;
+	}
+
+	child->activeClusterCount = 0;
+	child->initialActiveLevel = source->initialActiveLevel;
+	for ( int activeIndex = 0; activeIndex < source->activeClusterCount; ++activeIndex )
+	{
+		const uint32_t sourceActive = source->activeClusters[activeIndex];
+		if ( sourceActive < (uint32_t)source->clusterCount && clusterRemap[sourceActive] != UINT32_MAX )
+		{
+			(void)b2BlastActor_AddActiveCluster( child, clusterRemap[sourceActive] );
+		}
+	}
+	if ( child->activeClusterCount == 0 || ( child->activeClusterCount <= 1 && child->leafCount > 1 ) )
+	{
+		b2BlastActor_ActivateLeafGraphForTransitionChild( child );
+	}
+	else
+	{
+		b2BlastActor_SortUniqueActiveClusters( child );
+	}
+	b2Free( clusterRemap, source->clusterCount * (int)sizeof( uint32_t ) );
+	child->authoringHash = b2BlastComputeActorHash( child );
+	child->revision += 1;
+	child->flags &= (uint32_t)~b2_blastActorFlagDirtyGraph;
+	return true;
+}
+
 static bool b2BlastTransitionCellBelongsToSourcePrune(
 	const b2BlastFractureWorld* fractureWorld, const b2BlastActorTransition* transition, b2BlastFractureActorId sourceActorId )
 {
@@ -4367,6 +4943,13 @@ static bool b2BlastCommitTransition( b2World* world, b2BlastActorTransition* tra
 		b2BlastRollbackAllocatedActor( fractureWorld, child );
 		fractureWorld->stepAllocationFallbackCount += 1;
 		return false;
+	}
+	const b2Shape* childShape = b2ShapeArray_Get( &world->shapes, childShapeId.index1 - 1 );
+	if ( b2BlastActor_MigrateTransitionChildGraphFromSource( child, source, childShape, transition,
+															 fractureWorld->transitionCells ) == false )
+	{
+		b2BlastActor_ActivateLeafGraphForTransitionChild( child );
+		child->authoringHash = b2BlastComputeActorHash( child );
 	}
 
 	transition->childActorId = child->id;
