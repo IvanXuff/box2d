@@ -232,7 +232,8 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 
 	if ( shapeType == b2_pixelShape )
 	{
-		if ( b2BlastFractureWorld_TryConsumePendingShapeActorBinding( world, body, shape, b2BlastMobilityFromBodyType( body->type ) ) == false )
+		if ( ( shape->pixel.flags & b2_pixelShapeFlagDisableBlastFracture ) == 0 &&
+			 b2BlastFractureWorld_TryConsumePendingShapeActorBinding( world, body, shape, b2BlastMobilityFromBodyType( body->type ) ) == false )
 		{
 			b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
 		}
@@ -1627,7 +1628,14 @@ bool b2Shape_SetPixelShape( b2ShapeId shapeId, const b2PixelShape* pixel, bool u
 	b2ResetProxy( world, shape, wakeBodies, destroyProxy );
 
 	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
-	b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
+	if ( ( shape->pixel.flags & b2_pixelShapeFlagDisableBlastFracture ) == 0 )
+	{
+		b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
+	}
+	else
+	{
+		b2BlastFractureWorld_UnbindShape( world, shape );
+	}
 	b2BlastFractureWorld_EndStep( world );
 	if ( updateBodyMass )
 	{

@@ -35,6 +35,17 @@ typedef struct b2BlastFractureWorld
 	b2BlastOverlayActorView* overlayActorViews;
 	int overlayActorViewCount;
 	int overlayActorViewCapacity;
+	b2BlastOverlayCluster* overlayClusters;
+	int overlayClusterCount;
+	int overlayClusterCapacity;
+	b2BlastActiveBond* overlayBonds;
+	int overlayBondCount;
+	int overlayBondCapacity;
+	uint32_t* overlayCellToActiveCluster;
+	int overlayCellToActiveClusterCount;
+	int overlayCellToActiveClusterCapacity;
+	uint32_t* overlayLeafRemapScratch;
+	int overlayLeafRemapScratchCapacity;
 	uint32_t overlayReadRevision;
 	uint32_t overlayDirectReadCount;
 

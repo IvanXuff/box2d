@@ -163,6 +163,8 @@ typedef struct b2BlastActorTransition
 	int32_t sourceMinY;
 	int32_t sourceMaxX;
 	int32_t sourceMaxY;
+	int32_t sourceWidth;
+	int32_t sourceHeight;
 	int32_t cellOffset;
 	int32_t cellCount;
 	uint32_t sourceTopologyRevision;
@@ -246,6 +248,31 @@ typedef struct b2BlastOverlayReadQuery
 	uint32_t flags;
 } b2BlastOverlayReadQuery;
 
+typedef enum b2BlastOverlayReadFlags
+{
+	b2_blastOverlayReadLeafGraph = 0x0001,
+} b2BlastOverlayReadFlags;
+
+typedef struct b2BlastOverlayCluster
+{
+	uint32_t clusterIndex;
+	uint32_t firstLeaf;
+	uint32_t leafCount;
+	b2Vec2 centroid;
+	float mass;
+	uint16_t level;
+	uint16_t flags;
+	uint16_t minX;
+	uint16_t minY;
+	uint16_t maxX;
+	uint16_t maxY;
+} b2BlastOverlayCluster;
+
+typedef enum b2BlastClusterDebugFlags
+{
+	b2_blastClusterDebugWorldAnchor = 0x0001,
+} b2BlastClusterDebugFlags;
+
 typedef struct b2BlastOverlayActorView
 {
 	b2BlastFractureActorId actorId;
@@ -266,6 +293,13 @@ typedef struct b2BlastOverlayActorView
 	int32_t bondCount;
 	const uint32_t* cellToLeaf;
 	int32_t cellToLeafCount;
+	const b2BlastOverlayCluster* activeClusters;
+	int32_t activeClusterCount;
+	const b2BlastActiveBond* activeBonds;
+	int32_t activeBondCount;
+	const uint32_t* cellToActiveCluster;
+	int32_t cellToActiveClusterCount;
+	uint16_t activeLevel;
 } b2BlastOverlayActorView;
 
 typedef struct b2BlastOverlayReadView

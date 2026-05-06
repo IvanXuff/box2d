@@ -579,6 +579,8 @@ typedef struct b2PixelAsset
 	int32_t occupancyWordCount;
 	const b2BlastMaterialId* materialIds;
 	int32_t materialIdCount;
+	const uint8_t* supportMask;
+	int32_t supportMaskCount;
 	const b2BlastMaterialTable* materialTable;
 	uint64_t materialHash;
 	const uint8_t* featureTypes;
@@ -610,6 +612,11 @@ typedef enum b2PixelShapeUpdateKind
 	b2_pixelShapeUpdateLocalOriginOnly = 3,
 } b2PixelShapeUpdateKind;
 
+typedef enum b2PixelShapeFlags
+{
+	b2_pixelShapeFlagDisableBlastFracture = 0x00000001,
+} b2PixelShapeFlags;
+
 /// Pixel shape geometry. The asset is a caller-owned immutable view and must outlive the shape.
 /// diskRadius is measured in pixel-size units; 0 selects b2_defaultPixelDiskRadius and negative values are invalid.
 /// @ingroup shape
@@ -625,6 +632,7 @@ typedef struct b2PixelShape
 	int32_t dirtyWidth;
 	int32_t dirtyHeight;
 	uint64_t materialHash;
+	uint32_t flags;
 } b2PixelShape;
 
 /// Configuration for building a canonical b2PixelAsset from occupancy bits.

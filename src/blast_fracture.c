@@ -359,6 +359,74 @@ static void b2BlastEnsureOverlayActorViewCapacity( b2BlastFractureWorld* fractur
 	fractureWorld->overlayActorViewCapacity = newCapacity;
 }
 
+static void b2BlastEnsureOverlayClusterCapacity( b2BlastFractureWorld* fractureWorld, int capacity )
+{
+	if ( fractureWorld == NULL || capacity <= fractureWorld->overlayClusterCapacity )
+	{
+		return;
+	}
+	int oldCapacity = fractureWorld->overlayClusterCapacity;
+	int newCapacity = oldCapacity < 32 ? 32 : oldCapacity;
+	while ( newCapacity < capacity )
+	{
+		newCapacity += newCapacity >> 1;
+	}
+	fractureWorld->overlayClusters =
+		b2BlastResize( fractureWorld->overlayClusters, oldCapacity, newCapacity, (int)sizeof( b2BlastOverlayCluster ) );
+	fractureWorld->overlayClusterCapacity = newCapacity;
+}
+
+static void b2BlastEnsureOverlayBondCapacity( b2BlastFractureWorld* fractureWorld, int capacity )
+{
+	if ( fractureWorld == NULL || capacity <= fractureWorld->overlayBondCapacity )
+	{
+		return;
+	}
+	int oldCapacity = fractureWorld->overlayBondCapacity;
+	int newCapacity = oldCapacity < 64 ? 64 : oldCapacity;
+	while ( newCapacity < capacity )
+	{
+		newCapacity += newCapacity >> 1;
+	}
+	fractureWorld->overlayBonds =
+		b2BlastResize( fractureWorld->overlayBonds, oldCapacity, newCapacity, (int)sizeof( b2BlastActiveBond ) );
+	fractureWorld->overlayBondCapacity = newCapacity;
+}
+
+static void b2BlastEnsureOverlayCellToActiveClusterCapacity( b2BlastFractureWorld* fractureWorld, int capacity )
+{
+	if ( fractureWorld == NULL || capacity <= fractureWorld->overlayCellToActiveClusterCapacity )
+	{
+		return;
+	}
+	int oldCapacity = fractureWorld->overlayCellToActiveClusterCapacity;
+	int newCapacity = oldCapacity < 256 ? 256 : oldCapacity;
+	while ( newCapacity < capacity )
+	{
+		newCapacity += newCapacity >> 1;
+	}
+	fractureWorld->overlayCellToActiveCluster = b2BlastResize(
+		fractureWorld->overlayCellToActiveCluster, oldCapacity, newCapacity, (int)sizeof( uint32_t ) );
+	fractureWorld->overlayCellToActiveClusterCapacity = newCapacity;
+}
+
+static void b2BlastEnsureOverlayLeafRemapScratchCapacity( b2BlastFractureWorld* fractureWorld, int capacity )
+{
+	if ( fractureWorld == NULL || capacity <= fractureWorld->overlayLeafRemapScratchCapacity )
+	{
+		return;
+	}
+	int oldCapacity = fractureWorld->overlayLeafRemapScratchCapacity;
+	int newCapacity = oldCapacity < 256 ? 256 : oldCapacity;
+	while ( newCapacity < capacity )
+	{
+		newCapacity += newCapacity >> 1;
+	}
+	fractureWorld->overlayLeafRemapScratch =
+		b2BlastResize( fractureWorld->overlayLeafRemapScratch, oldCapacity, newCapacity, (int)sizeof( uint32_t ) );
+	fractureWorld->overlayLeafRemapScratchCapacity = newCapacity;
+}
+
 static bool b2BlastAABBOverlaps( b2AABB a, b2AABB b )
 {
 	return a.lowerBound.x <= b.upperBound.x && a.upperBound.x >= b.lowerBound.x && a.lowerBound.y <= b.upperBound.y &&
@@ -732,6 +800,67 @@ static float b2BlastBondCapacity( const b2PixelAsset* asset, b2BlastMaterialId m
 	return b2MaxFloat( 1.0f, weakSide * b2MaxFloat( area, 1.0f ) * brittleScale );
 }
 
+static bool b2BlastClusterIsAdjacentToGroup( const b2BlastActor* actor, uint32_t candidateLocalCluster, int groupLabel )
+{
+	if ( actor == NULL || actor->leafRemapScratch == NULL || actor->componentScratch == NULL )
+	{
+		return false;
+	}
+	for ( int bondIndex = 0; bondIndex < actor->bondCount; ++bondIndex )
+	{
+		const b2BlastActiveBond* bond = actor->bonds + bondIndex;
+		if ( bond->leafA >= (uint32_t)actor->leafCount || bond->leafB >= (uint32_t)actor->leafCount )
+		{
+			continue;
+		}
+		const uint32_t clusterA = actor->leafRemapScratch[bond->leafA];
+		const uint32_t clusterB = actor->leafRemapScratch[bond->leafB];
+		if ( clusterA == UINT32_MAX || clusterB == UINT32_MAX )
+		{
+			continue;
+		}
+		if ( clusterA == candidateLocalCluster && actor->componentScratch[clusterB] == groupLabel )
+		{
+			return true;
+		}
+		if ( clusterB == candidateLocalCluster && actor->componentScratch[clusterA] == groupLabel )
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool b2BlastAppendClusterChildToParent( b2BlastActor* actor, int currentStart, int childLocalIndex, b2BlastCluster* parent )
+{
+	if ( actor == NULL || parent == NULL || childLocalIndex < 0 )
+	{
+		return false;
+	}
+	b2BlastCluster* child = actor->clusters + currentStart + childLocalIndex;
+	child->parent = parent->id;
+	if ( actor->clusterChildCount >= actor->clusterChildCapacity || actor->clusterLeafRefCount + (int)child->leafCount > actor->clusterLeafRefCapacity )
+	{
+		return false;
+	}
+	actor->clusterChildren[actor->clusterChildCount++] = child->id;
+	parent->mass += child->mass;
+	parent->centroid.x += child->centroid.x * child->mass;
+	parent->centroid.y += child->centroid.y * child->mass;
+	parent->minX = (uint16_t)b2MinInt( parent->minX, child->minX );
+	parent->minY = (uint16_t)b2MinInt( parent->minY, child->minY );
+	parent->maxX = (uint16_t)b2MaxInt( parent->maxX, child->maxX );
+	parent->maxY = (uint16_t)b2MaxInt( parent->maxY, child->maxY );
+	parent->flags |= child->flags;
+	for ( uint32_t li = 0; li < child->leafCount; ++li )
+	{
+		actor->clusterLeaves[actor->clusterLeafRefCount++] = actor->clusterLeaves[child->firstLeaf + li];
+		parent->leafCount += 1;
+	}
+	parent->childCount += 1;
+	return true;
+}
+
 static void b2BlastActor_ClearRuntimeDemand( b2BlastActor* actor )
 {
 	for ( int i = 0; i < actor->bondCount; ++i )
@@ -937,6 +1066,7 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 		float cx = 0.0f;
 		float cy = 0.0f;
 		float mass = 0.0f;
+		bool leafHasExplicitSupport = false;
 		int head = 0;
 		int tail = 0;
 		actor->queueScratch[tail++] = start;
@@ -957,6 +1087,10 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 			leaf.minY = (uint16_t)b2MinInt( leaf.minY, y );
 			leaf.maxX = (uint16_t)b2MaxInt( leaf.maxX, x );
 			leaf.maxY = (uint16_t)b2MaxInt( leaf.maxY, y );
+			if ( asset->supportMask != NULL && asset->supportMaskCount >= width * height && asset->supportMask[cell] != 0 )
+			{
+				leafHasExplicitSupport = true;
+			}
 			actor->cellToLeaf[cell] = (uint32_t)actor->leafCount;
 
 			bool voted = false;
@@ -1017,7 +1151,19 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 		}
 		leaf.mass = mass;
 		leaf.centroid = mass > 0.0f ? (b2Vec2){ cx / mass, cy / mass } : b2Vec2_zero;
-		if ( actor->mobility == b2_blastActorMobilityAnchored && leaf.maxY >= (uint16_t)( height - 1 ) )
+		bool hasWorldAnchor = false;
+		if ( actor->mobility == b2_blastActorMobilityAnchored )
+		{
+			if ( asset->supportMask != NULL && asset->supportMaskCount >= width * height )
+			{
+				hasWorldAnchor = leafHasExplicitSupport;
+			}
+			else
+			{
+				hasWorldAnchor = leaf.maxY >= (uint16_t)( height - 1 );
+			}
+		}
+		if ( hasWorldAnchor )
 		{
 			leaf.flags |= b2_blastLeafFlagWorldAnchor;
 			leaf.supportConstraintMask = 1u;
@@ -1180,37 +1326,99 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 									  : ( level == 2 ? b2MaxInt( 1, ( currentCount * 10 + 31 ) / 32 ) : 1 );
 		int newStart = actor->clusterCount;
 		int newCount = 0;
-		const int groupSize = b2MaxInt( 1, ( currentCount + target - 1 ) / target );
-		for ( int groupStart = 0; groupStart < currentCount && actor->clusterCount < actor->clusterCapacity; groupStart += groupSize )
+		int assignedCount = 0;
+		for ( int i = 0; i < actor->leafCount; ++i )
 		{
-			const int groupEnd = b2MinInt( currentCount, groupStart + groupSize );
+			actor->leafRemapScratch[i] = UINT32_MAX;
+		}
+		for ( int ci = 0; ci < currentCount; ++ci )
+		{
+			const b2BlastCluster* cluster = actor->clusters + currentStart + ci;
+			actor->componentScratch[ci] = -1;
+			actor->visitScratch[ci] = 0;
+			for ( uint32_t li = 0; li < cluster->leafCount; ++li )
+			{
+				const uint32_t leafIndex = actor->clusterLeaves[cluster->firstLeaf + li];
+				if ( leafIndex < (uint32_t)actor->leafCount )
+				{
+					actor->leafRemapScratch[leafIndex] = (uint32_t)ci;
+				}
+			}
+		}
+		while ( assignedCount < currentCount && actor->clusterCount < actor->clusterCapacity )
+		{
+			const int groupsRemaining = b2MaxInt( 1, target - newCount );
+			const int remaining = currentCount - assignedCount;
+			const int desiredGroupSize = b2MaxInt( 1, ( remaining + groupsRemaining - 1 ) / groupsRemaining );
 			b2BlastCluster parent = { 0 };
 			parent.id = (uint32_t)actor->clusterCount;
 			parent.parent = UINT32_MAX;
 			parent.firstChild = (uint32_t)actor->clusterChildCount;
-			parent.childCount = (uint32_t)( groupEnd - groupStart );
+			parent.childCount = 0;
 			parent.firstLeaf = (uint32_t)actor->clusterLeafRefCount;
 			parent.level = (uint16_t)level;
 			parent.minX = UINT16_MAX;
 			parent.minY = UINT16_MAX;
-			for ( int ci = groupStart; ci < groupEnd; ++ci )
+			int seedCluster = B2_NULL_INDEX;
+			for ( int ci = 0; ci < currentCount; ++ci )
 			{
-				b2BlastCluster* child = actor->clusters + currentStart + ci;
-				child->parent = parent.id;
-				actor->clusterChildren[actor->clusterChildCount++] = child->id;
-				parent.mass += child->mass;
-				parent.centroid.x += child->centroid.x * child->mass;
-				parent.centroid.y += child->centroid.y * child->mass;
-				parent.minX = (uint16_t)b2MinInt( parent.minX, child->minX );
-				parent.minY = (uint16_t)b2MinInt( parent.minY, child->minY );
-				parent.maxX = (uint16_t)b2MaxInt( parent.maxX, child->maxX );
-				parent.maxY = (uint16_t)b2MaxInt( parent.maxY, child->maxY );
-				parent.flags |= child->flags;
-				for ( uint32_t li = 0; li < child->leafCount; ++li )
+				if ( actor->visitScratch[ci] == 0 )
 				{
-					actor->clusterLeaves[actor->clusterLeafRefCount++] = actor->clusterLeaves[child->firstLeaf + li];
-					parent.leafCount += 1;
+					seedCluster = ci;
+					break;
 				}
+			}
+			if ( seedCluster == B2_NULL_INDEX )
+			{
+				break;
+			}
+			if ( b2BlastAppendClusterChildToParent( actor, currentStart, seedCluster, &parent ) == false )
+			{
+				break;
+			}
+			actor->visitScratch[seedCluster] = 1;
+			actor->componentScratch[seedCluster] = newCount;
+			actor->queueScratch[0] = seedCluster;
+			assignedCount += 1;
+			while ( (int)parent.childCount < desiredGroupSize && assignedCount < currentCount )
+			{
+				int bestCluster = B2_NULL_INDEX;
+				float bestScore = FLT_MAX;
+				const b2Vec2 groupCentroid = parent.mass > 0.0f
+					? (b2Vec2){ parent.centroid.x / parent.mass, parent.centroid.y / parent.mass }
+					: actor->clusters[currentStart + seedCluster].centroid;
+				for ( int ci = 0; ci < currentCount; ++ci )
+				{
+					if ( actor->visitScratch[ci] != 0 )
+					{
+						continue;
+					}
+					const bool adjacent = b2BlastClusterIsAdjacentToGroup( actor, (uint32_t)ci, newCount );
+					if ( adjacent == false )
+					{
+						continue;
+					}
+					const b2BlastCluster* candidate = actor->clusters + currentStart + ci;
+					const b2Vec2 delta = b2Sub( candidate->centroid, groupCentroid );
+					const float score = b2Dot( delta, delta );
+					if ( score < bestScore )
+					{
+						bestScore = score;
+						bestCluster = ci;
+					}
+				}
+				if ( bestCluster == B2_NULL_INDEX )
+				{
+					break;
+				}
+				if ( b2BlastAppendClusterChildToParent( actor, currentStart, bestCluster, &parent ) == false )
+				{
+					break;
+				}
+				actor->visitScratch[bestCluster] = 1;
+				actor->componentScratch[bestCluster] = newCount;
+				actor->queueScratch[parent.childCount - 1] = bestCluster;
+				assignedCount += 1;
 			}
 			if ( parent.mass > 0.0f )
 			{
@@ -1268,6 +1476,20 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 		actor->rootCluster = actor->clusters[currentStart].id;
 	}
 
+	uint16_t maxLevel = 0;
+	uint16_t maxNonRootLevel = 0;
+	for ( int i = 0; i < actor->clusterCount; ++i )
+	{
+		const b2BlastCluster* cluster = actor->clusters + i;
+		maxLevel = (uint16_t)b2MaxInt( maxLevel, cluster->level );
+		if ( cluster->id != actor->rootCluster )
+		{
+			maxNonRootLevel = (uint16_t)b2MaxInt( maxNonRootLevel, cluster->level );
+		}
+	}
+	const uint16_t highestRuntimeLevel = maxNonRootLevel > 0 ? maxNonRootLevel : maxLevel;
+	actor->initialActiveLevel = (uint16_t)b2ClampInt( params.startLevel, 0, highestRuntimeLevel );
+
 	actor->topologyVersion = asset->topologyVersion;
 	actor->materialHash = asset->materialHash;
 	uint64_t hash = 14695981039346656037ULL;
@@ -1311,6 +1533,18 @@ void b2BlastFractureWorld_Create( b2BlastFractureWorld* fractureWorld )
 	fractureWorld->overlayActorViewCapacity = 16;
 	fractureWorld->overlayActorViews =
 		b2AllocZeroInit( fractureWorld->overlayActorViewCapacity * (int)sizeof( b2BlastOverlayActorView ) );
+	fractureWorld->overlayClusterCapacity = 64;
+	fractureWorld->overlayClusters =
+		b2AllocZeroInit( fractureWorld->overlayClusterCapacity * (int)sizeof( b2BlastOverlayCluster ) );
+	fractureWorld->overlayBondCapacity = 128;
+	fractureWorld->overlayBonds =
+		b2AllocZeroInit( fractureWorld->overlayBondCapacity * (int)sizeof( b2BlastActiveBond ) );
+	fractureWorld->overlayCellToActiveClusterCapacity = 512;
+	fractureWorld->overlayCellToActiveCluster =
+		b2AllocZeroInit( fractureWorld->overlayCellToActiveClusterCapacity * (int)sizeof( uint32_t ) );
+	fractureWorld->overlayLeafRemapScratchCapacity = 512;
+	fractureWorld->overlayLeafRemapScratch =
+		b2AllocZeroInit( fractureWorld->overlayLeafRemapScratchCapacity * (int)sizeof( uint32_t ) );
 }
 
 void b2BlastFractureWorld_Destroy( b2BlastFractureWorld* fractureWorld )
@@ -1328,6 +1562,12 @@ void b2BlastFractureWorld_Destroy( b2BlastFractureWorld* fractureWorld )
 	b2Free( fractureWorld->transitions, fractureWorld->transitionCapacity * (int)sizeof( b2BlastActorTransition ) );
 	b2Free( fractureWorld->transitionCells, fractureWorld->transitionCellCapacity * (int)sizeof( int32_t ) );
 	b2Free( fractureWorld->overlayActorViews, fractureWorld->overlayActorViewCapacity * (int)sizeof( b2BlastOverlayActorView ) );
+	b2Free( fractureWorld->overlayClusters, fractureWorld->overlayClusterCapacity * (int)sizeof( b2BlastOverlayCluster ) );
+	b2Free( fractureWorld->overlayBonds, fractureWorld->overlayBondCapacity * (int)sizeof( b2BlastActiveBond ) );
+	b2Free( fractureWorld->overlayCellToActiveCluster,
+			fractureWorld->overlayCellToActiveClusterCapacity * (int)sizeof( uint32_t ) );
+	b2Free( fractureWorld->overlayLeafRemapScratch,
+			fractureWorld->overlayLeafRemapScratchCapacity * (int)sizeof( uint32_t ) );
 	*fractureWorld = (b2BlastFractureWorld){ 0 };
 }
 
@@ -1877,6 +2117,8 @@ static bool b2BlastAppendTransitionForComponent( b2BlastFractureWorld* fractureW
 	transition->sourceMinY = minY;
 	transition->sourceMaxX = maxX;
 	transition->sourceMaxY = maxY;
+	transition->sourceWidth = actor->ownedAsset.width;
+	transition->sourceHeight = actor->ownedAsset.height;
 	transition->cellOffset = cellOffset;
 	transition->cellCount = cellCount;
 	transition->sourceTopologyRevision = actor->topologyVersion;
@@ -2591,6 +2833,156 @@ b2BlastFractureDebugSnapshot b2BlastFracture_GetDebugSnapshot( void )
 	return snapshot;
 }
 
+static void b2BlastAppendOverlayActiveGraph( b2BlastFractureWorld* fractureWorld, const b2BlastActor* actor,
+											 b2BlastOverlayActorView* view, bool leafGraph )
+{
+	if ( fractureWorld == NULL || actor == NULL || view == NULL || actor->leafCount <= 0 || actor->clusterCount <= 0 )
+	{
+		return;
+	}
+	if ( actor->clusters == NULL || actor->clusterLeaves == NULL || actor->clusterLeafRefCount <= 0 )
+	{
+		return;
+	}
+
+	const uint16_t activeLevel = leafGraph ? 0 : actor->initialActiveLevel;
+	b2BlastEnsureOverlayLeafRemapScratchCapacity( fractureWorld, actor->leafCount );
+	uint32_t* leafRemapScratch = fractureWorld->overlayLeafRemapScratch;
+	if ( leafRemapScratch == NULL )
+	{
+		return;
+	}
+	for ( int i = 0; i < actor->leafCount; ++i )
+	{
+		leafRemapScratch[i] = UINT32_MAX;
+	}
+
+	b2BlastEnsureOverlayClusterCapacity( fractureWorld, fractureWorld->overlayClusterCount + actor->clusterCount );
+	b2BlastEnsureOverlayBondCapacity( fractureWorld, fractureWorld->overlayBondCount + actor->bondCount );
+	b2BlastEnsureOverlayCellToActiveClusterCapacity(
+		fractureWorld, fractureWorld->overlayCellToActiveClusterCount + actor->cellToLeafCount );
+
+	const int clusterStart = fractureWorld->overlayClusterCount;
+	for ( int clusterIndex = 0; clusterIndex < actor->clusterCount; ++clusterIndex )
+	{
+		const b2BlastCluster* cluster = actor->clusters + clusterIndex;
+		if ( cluster->level != activeLevel )
+		{
+			continue;
+		}
+		if ( cluster->firstLeaf == UINT32_MAX || cluster->firstLeaf + cluster->leafCount > (uint32_t)actor->clusterLeafRefCount )
+		{
+			continue;
+		}
+		const uint32_t localClusterIndex = (uint32_t)( fractureWorld->overlayClusterCount - clusterStart );
+		b2BlastOverlayCluster* overlayCluster = fractureWorld->overlayClusters + fractureWorld->overlayClusterCount++;
+		*overlayCluster = (b2BlastOverlayCluster){ 0 };
+		overlayCluster->clusterIndex = cluster->id;
+		overlayCluster->firstLeaf = cluster->firstLeaf;
+		overlayCluster->leafCount = cluster->leafCount;
+		overlayCluster->centroid = cluster->centroid;
+		overlayCluster->mass = cluster->mass;
+		overlayCluster->level = cluster->level;
+		overlayCluster->flags = cluster->flags;
+		overlayCluster->minX = cluster->minX;
+		overlayCluster->minY = cluster->minY;
+		overlayCluster->maxX = cluster->maxX;
+		overlayCluster->maxY = cluster->maxY;
+
+		for ( uint32_t leafRef = 0; leafRef < cluster->leafCount; ++leafRef )
+		{
+			const uint32_t leafIndex = actor->clusterLeaves[cluster->firstLeaf + leafRef];
+			if ( leafIndex < (uint32_t)actor->leafCount )
+			{
+				leafRemapScratch[leafIndex] = localClusterIndex;
+			}
+		}
+	}
+
+	view->activeClusters = fractureWorld->overlayClusters + clusterStart;
+	view->activeClusterCount = fractureWorld->overlayClusterCount - clusterStart;
+	view->activeLevel = activeLevel;
+	if ( view->activeClusterCount <= 0 )
+	{
+		return;
+	}
+
+	const int cellStart = fractureWorld->overlayCellToActiveClusterCount;
+	for ( int cell = 0; cell < actor->cellToLeafCount; ++cell )
+	{
+		uint32_t activeCluster = UINT32_MAX;
+		const uint32_t leafIndex = actor->cellToLeaf[cell];
+		if ( leafIndex < (uint32_t)actor->leafCount )
+		{
+			activeCluster = leafRemapScratch[leafIndex];
+		}
+		fractureWorld->overlayCellToActiveCluster[fractureWorld->overlayCellToActiveClusterCount++] = activeCluster;
+	}
+	view->cellToActiveCluster = fractureWorld->overlayCellToActiveCluster + cellStart;
+	view->cellToActiveClusterCount = fractureWorld->overlayCellToActiveClusterCount - cellStart;
+
+	const int bondStart = fractureWorld->overlayBondCount;
+	for ( int bondIndex = 0; bondIndex < actor->bondCount; ++bondIndex )
+	{
+		const b2BlastActiveBond* source = actor->bonds + bondIndex;
+		if ( source->leafA >= (uint32_t)actor->leafCount || source->leafB >= (uint32_t)actor->leafCount )
+		{
+			continue;
+		}
+		if ( ( actor->leaves[source->leafA].flags & b2_blastLeafFlagDetached ) != 0 ||
+			 ( actor->leaves[source->leafB].flags & b2_blastLeafFlagDetached ) != 0 )
+		{
+			continue;
+		}
+		uint32_t clusterA = leafRemapScratch[source->leafA];
+		uint32_t clusterB = leafRemapScratch[source->leafB];
+		if ( clusterA == UINT32_MAX || clusterB == UINT32_MAX || clusterA == clusterB )
+		{
+			continue;
+		}
+		if ( clusterB < clusterA )
+		{
+			uint32_t temp = clusterA;
+			clusterA = clusterB;
+			clusterB = temp;
+		}
+
+		b2BlastActiveBond* aggregate = NULL;
+		for ( int i = bondStart; i < fractureWorld->overlayBondCount; ++i )
+		{
+			b2BlastActiveBond* candidate = fractureWorld->overlayBonds + i;
+			if ( candidate->clusterA == clusterA && candidate->clusterB == clusterB )
+			{
+				aggregate = candidate;
+				break;
+			}
+		}
+		if ( aggregate == NULL )
+		{
+			aggregate = fractureWorld->overlayBonds + fractureWorld->overlayBondCount++;
+			*aggregate = (b2BlastActiveBond){ 0 };
+			aggregate->leafA = source->leafA;
+			aggregate->leafB = source->leafB;
+			aggregate->clusterA = clusterA;
+			aggregate->clusterB = clusterB;
+			aggregate->damage = source->damage;
+			aggregate->flags = source->flags;
+			aggregate->materialMix = source->materialMix;
+		}
+		aggregate->area += source->area;
+		aggregate->capacity += source->capacity;
+		aggregate->toughness += source->toughness;
+		aggregate->impactDemand += source->impactDemand;
+		aggregate->loadDemand += source->loadDemand;
+		aggregate->propagationWeight = b2MaxFloat( aggregate->propagationWeight, source->propagationWeight );
+		aggregate->damage = b2MaxFloat( aggregate->damage, source->damage );
+		aggregate->flags |= source->flags;
+		aggregate->materialMix |= source->materialMix;
+	}
+	view->activeBonds = fractureWorld->overlayBonds + bondStart;
+	view->activeBondCount = fractureWorld->overlayBondCount - bondStart;
+}
+
 b2BlastFractureDebugSnapshot b2World_GetBlastFractureDebugSnapshot( b2WorldId worldId )
 {
 	b2World* world = b2GetWorldFromId( worldId );
@@ -2621,9 +3013,30 @@ bool b2World_BeginBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadQ
 
 	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
 	fractureWorld->overlayActorViewCount = 0;
+	fractureWorld->overlayClusterCount = 0;
+	fractureWorld->overlayBondCount = 0;
+	fractureWorld->overlayCellToActiveClusterCount = 0;
 	b2BlastEnsureOverlayActorViewCapacity( fractureWorld, fractureWorld->actorCount );
+	int overlayClusterCapacity = 0;
+	int overlayBondCapacity = 0;
+	int overlayCellCapacity = 0;
+	for ( int i = 0; i < fractureWorld->actorCount; ++i )
+	{
+		const b2BlastActor* actor = fractureWorld->actors + i;
+		if ( ( actor->flags & b2_blastActorFlagInUse ) == 0 )
+		{
+			continue;
+		}
+		overlayClusterCapacity += actor->clusterCount;
+		overlayBondCapacity += actor->bondCount;
+		overlayCellCapacity += actor->cellToLeafCount;
+	}
+	b2BlastEnsureOverlayClusterCapacity( fractureWorld, overlayClusterCapacity );
+	b2BlastEnsureOverlayBondCapacity( fractureWorld, overlayBondCapacity );
+	b2BlastEnsureOverlayCellToActiveClusterCapacity( fractureWorld, overlayCellCapacity );
 	const bool hasQuery = query != NULL && query->worldAABB.upperBound.x >= query->worldAABB.lowerBound.x &&
 						  query->worldAABB.upperBound.y >= query->worldAABB.lowerBound.y;
+	const bool leafGraph = query != NULL && ( query->flags & b2_blastOverlayReadLeafGraph ) != 0;
 	for ( int i = 0; i < fractureWorld->actorCount; ++i )
 	{
 		const b2BlastActor* actor = fractureWorld->actors + i;
@@ -2633,9 +3046,18 @@ bool b2World_BeginBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadQ
 		{
 			continue;
 		}
+		if ( actor->shapeId < 0 || actor->shapeId >= world->shapes.count || actor->bodyId < 0 || actor->bodyId >= world->bodies.count )
+		{
+			continue;
+		}
 		const b2Shape* shape = b2ShapeArray_Get( &world->shapes, actor->shapeId );
 		const b2Body* body = b2BodyArray_Get( &world->bodies, actor->bodyId );
 		if ( shape == NULL || body == NULL || shape->type != b2_pixelShape || shape->pixel.asset == NULL )
+		{
+			continue;
+		}
+		if ( shape->id != actor->shapeId || body->id != actor->bodyId || shape->bodyId != actor->bodyId ||
+			 body->setIndex == B2_NULL_INDEX || b2BlastActorIdEqual( shape->blastActorId, actor->id ) == false )
 		{
 			continue;
 		}
@@ -2664,6 +3086,7 @@ bool b2World_BeginBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadQ
 		view->bondCount = actor->bondCount;
 		view->cellToLeaf = actor->cellToLeaf;
 		view->cellToLeafCount = actor->cellToLeafCount;
+		b2BlastAppendOverlayActiveGraph( fractureWorld, actor, view, leafGraph );
 	}
 
 	fractureWorld->overlayDirectReadCount += 1;
@@ -2683,6 +3106,9 @@ void b2World_EndBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadVie
 		return;
 	}
 	world->blastFractureWorld.overlayActorViewCount = 0;
+	world->blastFractureWorld.overlayClusterCount = 0;
+	world->blastFractureWorld.overlayBondCount = 0;
+	world->blastFractureWorld.overlayCellToActiveClusterCount = 0;
 }
 
 int32_t b2World_GetBlastFractureTransitionCount( b2WorldId worldId )
