@@ -900,6 +900,12 @@ static float b2BlastBondCapacity( const b2PixelAsset* asset, b2BlastMaterialId m
 	return b2MaxFloat( 1.0f, weakSide * b2MaxFloat( area, 1.0f ) * brittleScale );
 }
 
+static bool b2BlastPixelAsset_CellHasSupport( const b2PixelAsset* asset, int cell, int cellCount )
+{
+	return asset != NULL && asset->supportMask != NULL && asset->supportMaskCount >= cellCount && cell >= 0 && cell < cellCount &&
+		   asset->supportMask[cell] != 0;
+}
+
 static bool b2BlastClusterIsAdjacentToGroup( const b2BlastActor* actor, uint32_t candidateLocalCluster, int groupLabel )
 {
 	if ( actor == NULL || actor->leafRemapScratch == NULL || actor->componentScratch == NULL )
@@ -1490,10 +1496,6 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 			if ( asset->supportMask != NULL && asset->supportMaskCount >= width * height )
 			{
 				hasWorldAnchor = leafHasExplicitSupport;
-			}
-			else
-			{
-				hasWorldAnchor = leaf.maxY >= (uint16_t)( height - 1 );
 			}
 		}
 		if ( hasWorldAnchor )
@@ -2218,10 +2220,6 @@ static bool b2BlastActor_RecomputeLeavesAndBondsAfterErase( b2BlastActor* actor,
 			{
 				hasWorldAnchor = leafHasExplicitSupport;
 			}
-			else
-			{
-				hasWorldAnchor = leaf->maxY >= (uint16_t)( height - 1 );
-			}
 		}
 		if ( hasWorldAnchor )
 		{
@@ -2536,6 +2534,14 @@ static bool b2BlastActor_RepairFromPixelShapeDirtyUpdate( b2BlastActor* actor, b
 				const b2BlastMaterialId oldMaterial = b2PixelAsset_GetMaterialId( &actor->ownedAsset, x, y );
 				const b2BlastMaterialId newMaterial = b2PixelAsset_GetMaterialId( asset, x, y );
 				if ( oldMaterial != newMaterial )
+				{
+					actor->visitScratch[oldLeaf] = 1;
+					changedAny = true;
+					cellChanged = true;
+				}
+				const bool oldSupport = b2BlastPixelAsset_CellHasSupport( &actor->ownedAsset, cell, oldCellCount );
+				const bool newSupport = b2BlastPixelAsset_CellHasSupport( asset, cell, newCellCount );
+				if ( oldSupport != newSupport )
 				{
 					actor->visitScratch[oldLeaf] = 1;
 					changedAny = true;
