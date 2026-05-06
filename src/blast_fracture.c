@@ -887,6 +887,40 @@ static b2BlastAuthoringParams b2BlastAuthoringParamsFromAsset( const b2PixelAsse
 	return params;
 }
 
+static float b2BlastAuthoringTargetLeafCellArea( const b2BlastAuthoringParams* params )
+{
+	const float spacing = params != NULL ? b2MaxFloat( 1.0f, params->seedSpacing ) : 3.3f;
+	return b2MaxFloat( 2.0f, 0.5f * spacing * spacing );
+}
+
+static float b2BlastAuthoringTargetActiveCellArea( const b2BlastAuthoringParams* params )
+{
+	float targetArea = b2BlastAuthoringTargetLeafCellArea( params );
+	const int startLevel = params != NULL ? b2MaxInt( 0, params->startLevel ) : 0;
+	for ( int level = 1; level < startLevel; ++level )
+	{
+		targetArea *= 4.0f;
+	}
+	return b2MaxFloat( 1.0f, targetArea );
+}
+
+static b2BlastAuthoringParams b2BlastAuthoringParamsFromActor( const b2BlastActor* actor )
+{
+	b2BlastMaterialId dominantMaterial = 0;
+	if ( actor != NULL )
+	{
+		for ( int leafIndex = 0; leafIndex < actor->leafCount; ++leafIndex )
+		{
+			if ( actor->leaves[leafIndex].cellCount > 0 )
+			{
+				dominantMaterial = actor->leaves[leafIndex].dominantMaterialId;
+				break;
+			}
+		}
+	}
+	return b2BlastAuthoringParamsFromAsset( actor != NULL ? &actor->ownedAsset : NULL, dominantMaterial );
+}
+
 static float b2BlastBondCapacity( const b2PixelAsset* asset, b2BlastMaterialId materialA, b2BlastMaterialId materialB, float area )
 {
 	const b2BlastMaterialPhysics* a = b2BlastFindMaterial( asset, materialA );
@@ -1082,6 +1116,83 @@ static void b2BlastActor_SortUniqueActiveClusters( b2BlastActor* actor )
 		}
 	}
 	actor->activeClusterCount = write;
+}
+
+static int b2BlastCluster_CellCount( const b2BlastActor* actor, const b2BlastCluster* cluster )
+{
+	if ( actor == NULL || cluster == NULL || cluster->firstLeaf == UINT32_MAX ||
+		 cluster->firstLeaf + cluster->leafCount > (uint32_t)actor->clusterLeafRefCount )
+	{
+		return 0;
+	}
+
+	int cellCount = 0;
+	for ( uint32_t ref = 0; ref < cluster->leafCount; ++ref )
+	{
+		const uint32_t leafIndex = actor->clusterLeaves[cluster->firstLeaf + ref];
+		if ( leafIndex < (uint32_t)actor->leafCount )
+		{
+			cellCount += actor->leaves[leafIndex].cellCount;
+		}
+	}
+	return cellCount;
+}
+
+static bool b2BlastActor_AddActiveClustersByArea( b2BlastActor* actor, uint32_t clusterId, float targetCellArea )
+{
+	if ( actor == NULL || clusterId >= (uint32_t)actor->clusterCount )
+	{
+		return false;
+	}
+
+	const b2BlastCluster* cluster = actor->clusters + clusterId;
+	const int clusterCellCount = b2BlastCluster_CellCount( actor, cluster );
+	if ( cluster->level == 0 || cluster->childCount == 0 || clusterCellCount <= b2MaxInt( 1, (int)ceilf( targetCellArea ) ) )
+	{
+		return b2BlastActor_AddActiveCluster( actor, clusterId );
+	}
+
+	bool addedChild = false;
+	for ( uint32_t childRef = 0; childRef < cluster->childCount; ++childRef )
+	{
+		if ( cluster->firstChild + childRef >= (uint32_t)actor->clusterChildCount )
+		{
+			continue;
+		}
+		const uint32_t childId = actor->clusterChildren[cluster->firstChild + childRef];
+		addedChild = b2BlastActor_AddActiveClustersByArea( actor, childId, targetCellArea ) || addedChild;
+	}
+	if ( addedChild == false )
+	{
+		return b2BlastActor_AddActiveCluster( actor, clusterId );
+	}
+	return true;
+}
+
+static void b2BlastActor_ResetActiveClustersByArea( b2BlastActor* actor, const b2BlastAuthoringParams* params )
+{
+	if ( actor == NULL )
+	{
+		return;
+	}
+
+	actor->activeClusterCount = 0;
+	if ( actor->activeClusterCapacity < actor->clusterCount )
+	{
+		actor->activeClusters =
+			b2BlastResize( actor->activeClusters, actor->activeClusterCapacity, actor->clusterCount, (int)sizeof( uint32_t ) );
+		actor->activeClusterCapacity = actor->clusterCount;
+	}
+
+	if ( actor->rootCluster != UINT32_MAX && actor->rootCluster < (uint32_t)actor->clusterCount )
+	{
+		(void)b2BlastActor_AddActiveClustersByArea( actor, actor->rootCluster, b2BlastAuthoringTargetActiveCellArea( params ) );
+	}
+	if ( actor->activeClusterCount == 0 )
+	{
+		b2BlastActor_ResetActiveClustersAtLevel( actor, actor->initialActiveLevel );
+	}
+	b2BlastActor_SortUniqueActiveClusters( actor );
 }
 
 static bool b2BlastActor_RefineActiveCluster( b2BlastActor* actor, uint32_t clusterId )
@@ -1301,7 +1412,9 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 	}
 
 	const b2BlastAuthoringParams params = b2BlastAuthoringParamsFromAsset( asset, dominantMaterial );
-	const int targetSeeds = b2ClampInt( b2MinInt( params.leafTarget, occupiedCount ), 1, maxLeaves );
+	const float targetLeafCellArea = b2BlastAuthoringTargetLeafCellArea( &params );
+	const int areaTargetSeeds = b2MaxInt( 1, (int)ceilf( (float)occupiedCount / targetLeafCellArea ) );
+	const int targetSeeds = b2ClampInt( b2MinInt( params.leafTarget, areaTargetSeeds ), 1, maxLeaves );
 	const float cellArea = asset->pixelSize * asset->pixelSize;
 
 	int seedCount = 0;
@@ -1824,7 +1937,7 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 	}
 	const uint16_t highestRuntimeLevel = maxNonRootLevel > 0 ? maxNonRootLevel : maxLevel;
 	actor->initialActiveLevel = (uint16_t)b2ClampInt( params.startLevel, 0, highestRuntimeLevel );
-	b2BlastActor_ResetActiveClustersAtLevel( actor, actor->initialActiveLevel );
+	b2BlastActor_ResetActiveClustersByArea( actor, &params );
 
 	actor->topologyVersion = asset->topologyVersion;
 	actor->materialHash = asset->materialHash;
@@ -2463,7 +2576,8 @@ static bool b2BlastActor_RecomputeLeavesAndBondsAfterErase( b2BlastActor* actor,
 	b2BlastActor_PruneActiveClusters( actor );
 	if ( actor->activeClusterCount == 0 && actor->leafCount > 0 )
 	{
-		b2BlastActor_ResetActiveClustersAtLevel( actor, actor->initialActiveLevel );
+		const b2BlastAuthoringParams params = b2BlastAuthoringParamsFromActor( actor );
+		b2BlastActor_ResetActiveClustersByArea( actor, &params );
 	}
 	return true;
 }
@@ -3600,6 +3714,12 @@ static void b2BlastRunDamageShader( b2BlastFractureWorld* fractureWorld, b2Blast
 	}
 }
 
+static bool b2BlastShapeDisablesFracture( const b2Shape* shape )
+{
+	return shape != NULL && shape->type == b2_pixelShape &&
+		   ( shape->pixel.flags & b2_pixelShapeFlagDisableBlastFracture ) != 0;
+}
+
 static void b2BlastConsumeContact( b2World* world, b2Contact* contact, float timeStep )
 {
 	if ( contact == NULL )
@@ -3644,16 +3764,23 @@ static void b2BlastConsumeContact( b2World* world, b2Contact* contact, float tim
 		b2Vec2 worldPointB = b2Add( transformB.p, point->anchorB );
 		b2Vec2 worldPoint = b2MulSV( 0.5f, b2Add( worldPointA, worldPointB ) );
 		b2Vec2 tangent = b2RightPerp( sim->manifold.normal );
+		bool shapeADisablesFracture = b2BlastShapeDisablesFracture( shapeA );
+		bool shapeBDisablesFracture = b2BlastShapeDisablesFracture( shapeB );
+		float contactImpulse = normalImpulse + fabsf( tangentImpulse );
 
 		if ( actorA != NULL )
 		{
 			b2Vec2 local = b2InvTransformPoint( transformA, worldPoint );
 			int leaf = b2BlastFindEndpointLeaf( fractureWorld, actorA, shapeA, local, true );
-			if ( point->yielded && point->unresolvedNormalImpulse > 0.0001f )
+			if ( shapeBDisablesFracture && contactImpulse > 0.0001f )
+			{
+				b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorA, leaf, contactImpulse, sim->manifold.normal );
+			}
+			else if ( point->yielded && point->unresolvedNormalImpulse > 0.0001f )
 			{
 				b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorA, leaf, point->unresolvedNormalImpulse, sim->manifold.normal );
 			}
-			if ( ( actorA->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
+			if ( shapeBDisablesFracture == false && ( actorA->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
 			{
 				float force = ( normalImpulse + fabsf( tangentImpulse ) ) * invDt;
 				b2BlastApplyLoadPathFromLeaf( fractureWorld, actorA, leaf, force, b2Add( sim->manifold.normal, tangent ) );
@@ -3665,11 +3792,15 @@ static void b2BlastConsumeContact( b2World* world, b2Contact* contact, float tim
 			b2Vec2 local = b2InvTransformPoint( transformB, worldPoint );
 			int leaf = b2BlastFindEndpointLeaf( fractureWorld, actorB, shapeB, local, true );
 			b2Vec2 reverseNormal = b2Neg( sim->manifold.normal );
-			if ( point->yielded && point->unresolvedNormalImpulse > 0.0001f )
+			if ( shapeADisablesFracture && contactImpulse > 0.0001f )
+			{
+				b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorB, leaf, contactImpulse, reverseNormal );
+			}
+			else if ( point->yielded && point->unresolvedNormalImpulse > 0.0001f )
 			{
 				b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorB, leaf, point->unresolvedNormalImpulse, reverseNormal );
 			}
-			if ( ( actorB->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
+			if ( shapeADisablesFracture == false && ( actorB->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
 			{
 				float force = ( normalImpulse + fabsf( tangentImpulse ) ) * invDt;
 				b2BlastApplyLoadPathFromLeaf( fractureWorld, actorB, leaf, force, b2Sub( tangent, sim->manifold.normal ) );
@@ -3712,16 +3843,23 @@ void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2C
 	b2Vec2 worldPointB = b2Add( transformB.p, anchorB );
 	b2Vec2 worldPoint = b2MulSV( 0.5f, b2Add( worldPointA, worldPointB ) );
 	b2Vec2 tangent = b2RightPerp( normal );
+	bool shapeADisablesFracture = b2BlastShapeDisablesFracture( shapeA );
+	bool shapeBDisablesFracture = b2BlastShapeDisablesFracture( shapeB );
+	float contactImpulse = normalImpulse + fabsf( tangentImpulse );
 
 	if ( actorA != NULL )
 	{
 		b2Vec2 local = b2InvTransformPoint( transformA, worldPoint );
 		int leaf = b2BlastFindEndpointLeaf( fractureWorld, actorA, shapeA, local, true );
-		if ( yielded && unresolvedNormalImpulse > 0.0001f )
+		if ( shapeBDisablesFracture && contactImpulse > 0.0001f )
+		{
+			b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorA, leaf, contactImpulse, normal );
+		}
+		else if ( yielded && unresolvedNormalImpulse > 0.0001f )
 		{
 			b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorA, leaf, unresolvedNormalImpulse, normal );
 		}
-		if ( ( actorA->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
+		if ( shapeBDisablesFracture == false && ( actorA->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
 		{
 			float force = ( normalImpulse + fabsf( tangentImpulse ) ) * invDt;
 			b2BlastApplyLoadPathFromLeaf( fractureWorld, actorA, leaf, force, b2Add( normal, tangent ) );
@@ -3733,11 +3871,15 @@ void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2C
 		b2Vec2 local = b2InvTransformPoint( transformB, worldPoint );
 		int leaf = b2BlastFindEndpointLeaf( fractureWorld, actorB, shapeB, local, true );
 		b2Vec2 reverseNormal = b2Neg( normal );
-		if ( yielded && unresolvedNormalImpulse > 0.0001f )
+		if ( shapeADisablesFracture && contactImpulse > 0.0001f )
+		{
+			b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorB, leaf, contactImpulse, reverseNormal );
+		}
+		else if ( yielded && unresolvedNormalImpulse > 0.0001f )
 		{
 			b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorB, leaf, unresolvedNormalImpulse, reverseNormal );
 		}
-		if ( ( actorB->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
+		if ( shapeADisablesFracture == false && ( actorB->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
 		{
 			float force = ( normalImpulse + fabsf( tangentImpulse ) ) * invDt;
 			b2BlastApplyLoadPathFromLeaf( fractureWorld, actorB, leaf, force, b2Sub( tangent, normal ) );
@@ -4892,8 +5034,15 @@ static bool b2BlastCommitTransition( b2World* world, b2BlastActorTransition* tra
 		( 0.5f * (float)( transition->sourceMinY + transition->sourceMaxY + 1 ) ) * pixelSize - sourceHalfHeight +
 			sourceShape->pixel.localOrigin.y,
 	};
+	b2PixelShape childPixelShape = { 0 };
+	childPixelShape.asset = &child->ownedAsset;
+	childPixelShape.localOrigin = b2Vec2_zero;
+	childPixelShape.diskRadius = sourceShape->pixel.diskRadius;
+	childPixelShape.topologyVersion = child->ownedAsset.topologyVersion;
+	const b2MassData childMassAtBoundsCenter = b2ComputePixelShapeMass( &childPixelShape, sourceShape->density );
+	const b2Vec2 childLocalOrigin = b2Neg( childMassAtBoundsCenter.center );
 	b2Transform sourceTransform = b2GetBodyTransformQuick( world, sourceBody );
-	b2Vec2 childPosition = b2TransformPoint( sourceTransform, componentLocalCenter );
+	b2Vec2 childPosition = b2TransformPoint( sourceTransform, b2Add( componentLocalCenter, childMassAtBoundsCenter.center ) );
 	b2WorldId worldId = { (uint16_t)( world->worldId + 1 ), world->generation };
 	b2BodyId sourceBodyId = { sourceBody->id + 1, world->worldId, sourceBody->generation };
 	b2ShapeId sourceShapeId = { sourceShape->id + 1, world->worldId, sourceShape->generation };
@@ -4939,7 +5088,7 @@ static bool b2BlastCommitTransition( b2World* world, b2BlastActorTransition* tra
 	shapeDef.updateBodyMass = true;
 	b2PixelShape pixelShape = { 0 };
 	pixelShape.asset = &child->ownedAsset;
-	pixelShape.localOrigin = b2Vec2_zero;
+	pixelShape.localOrigin = childLocalOrigin;
 	pixelShape.diskRadius = sourceShape->pixel.diskRadius;
 	pixelShape.topologyVersion = child->ownedAsset.topologyVersion;
 	b2ShapeId childShapeId = b2CreatePixelShapeBoundToBlastActor( childBodyId, &shapeDef, &pixelShape, child->id );
