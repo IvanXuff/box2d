@@ -493,8 +493,11 @@ typedef enum b2PixelFeatureType
 {
 	b2_pixelFeatureEmpty = 0,
 	b2_pixelFeatureInternal = 1,
-	b2_pixelFeatureEdge = 2,
-	b2_pixelFeatureCorner = 3,
+	/// Edge whose legal outward normal is constrained to the local X axis.
+	b2_pixelFeatureEdgeX = 2,
+	/// Edge whose legal outward normal is constrained to the local Y axis.
+	b2_pixelFeatureEdgeY = 3,
+	b2_pixelFeatureCorner = 4,
 } b2PixelFeatureType;
 
 /// A precomputed pixel boundary feature. The id must be stable for a given asset topology.

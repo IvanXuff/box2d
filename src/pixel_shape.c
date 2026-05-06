@@ -100,6 +100,11 @@ static bool b2PixelAsset_GetCellCount( const b2PixelAsset* asset, int32_t* cellC
 	return true;
 }
 
+static bool b2PixelFeatureTypeIsEdge( uint8_t type )
+{
+	return type == b2_pixelFeatureEdgeX || type == b2_pixelFeatureEdgeY;
+}
+
 static bool b2FeatureRefIsValid( const b2PixelAsset* asset, const b2PixelFeatureRef* feature, uint8_t expectedType )
 {
 	if ( feature->id == 0 || feature->type != expectedType )
@@ -120,6 +125,28 @@ static bool b2FeatureRefIsValid( const b2PixelAsset* asset, const b2PixelFeature
 
 	uint8_t type = b2PixelAsset_GetFeatureType( asset, feature->x, feature->y );
 	return type == expectedType && b2PixelAsset_IsOccupied( asset, feature->x, feature->y );
+}
+
+static bool b2EdgeFeatureRefIsValid( const b2PixelAsset* asset, const b2PixelFeatureRef* feature )
+{
+	if ( feature->id == 0 || b2PixelFeatureTypeIsEdge( feature->type ) == false )
+	{
+		return false;
+	}
+
+	if ( feature->x < 0 || feature->x >= asset->width || feature->y < 0 || feature->y >= asset->height )
+	{
+		return false;
+	}
+
+	uint16_t expectedId = b2PixelAsset_GetFeatureId( asset, feature->x, feature->y );
+	if ( feature->id != expectedId )
+	{
+		return false;
+	}
+
+	uint8_t type = b2PixelAsset_GetFeatureType( asset, feature->x, feature->y );
+	return type == feature->type && b2PixelFeatureTypeIsEdge( type ) && b2PixelAsset_IsOccupied( asset, feature->x, feature->y );
 }
 
 static float b2NormalizePixelDiskRadiusValue( float diskRadius )
@@ -207,13 +234,14 @@ bool b2ValidatePixelAsset( const b2PixelAsset* asset )
 			int x = index % asset->width;
 			int y = index / asset->width;
 			countedSolid += 1;
-			if ( type != b2_pixelFeatureInternal && type != b2_pixelFeatureEdge && type != b2_pixelFeatureCorner )
+			if ( type != b2_pixelFeatureInternal && b2PixelFeatureTypeIsEdge( type ) == false &&
+				 type != b2_pixelFeatureCorner )
 			{
 				return false;
 			}
 
 			countedCorners += type == b2_pixelFeatureCorner ? 1 : 0;
-			countedEdges += type == b2_pixelFeatureEdge ? 1 : 0;
+			countedEdges += b2PixelFeatureTypeIsEdge( type ) ? 1 : 0;
 			minX = b2MinInt( minX, x );
 			minY = b2MinInt( minY, y );
 			maxX = b2MaxInt( maxX, x );
@@ -283,7 +311,7 @@ bool b2ValidatePixelAsset( const b2PixelAsset* asset )
 	for ( int i = 0; i < asset->edgeCount; ++i )
 	{
 		const b2PixelFeatureRef* feature = asset->edges + i;
-		if ( b2FeatureRefIsValid( asset, feature, b2_pixelFeatureEdge ) == false || feature->id <= previousEdgeId )
+		if ( b2EdgeFeatureRefIsValid( asset, feature ) == false || feature->id <= previousEdgeId )
 		{
 			return false;
 		}
@@ -557,7 +585,12 @@ static uint8_t b2ClassifyPixelFeature( const uint64_t* occupancyBits, int32_t oc
 		}
 	}
 
-	return convexCorner || concaveCorner || supportCorner ? b2_pixelFeatureCorner : b2_pixelFeatureEdge;
+	if ( convexCorner || concaveCorner || supportCorner )
+	{
+		return b2_pixelFeatureCorner;
+	}
+
+	return ( n && s ) ? b2_pixelFeatureEdgeX : b2_pixelFeatureEdgeY;
 }
 
 static int b2ComparePixelFeatureRefById( const void* a, const void* b )
@@ -705,7 +738,7 @@ static bool b2PixelAsset_ReclassifyMarkedCell( const b2PixelAssetDirtyUpdateConf
 	uint8_t type = b2ClassifyPixelFeature( occupancyBits, occupancyWordCount, config->width, config->height, x, y, minX, minY,
 										   maxX, maxY, config->supportCornerInterval );
 	buffers->featureTypes[index] = type;
-	if ( type != b2_pixelFeatureCorner && type != b2_pixelFeatureEdge )
+	if ( type != b2_pixelFeatureCorner && b2PixelFeatureTypeIsEdge( type ) == false )
 	{
 		return true;
 	}
@@ -903,7 +936,7 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 														config->height, x, y, minX, minY, maxX, maxY,
 														config->supportCornerInterval );
 				result.requiredCorners += type == b2_pixelFeatureCorner ? 1 : 0;
-				result.requiredEdges += type == b2_pixelFeatureEdge ? 1 : 0;
+				result.requiredEdges += b2PixelFeatureTypeIsEdge( type ) ? 1 : 0;
 				word &= word - UINT64_C( 1 );
 			}
 		}
@@ -978,7 +1011,7 @@ b2PixelAssetBuildResult b2BuildPixelAssetFromOccupancy( const b2PixelAssetBuildC
 				{
 					buffers->corners[cornerCount++] = feature;
 				}
-				else if ( type == b2_pixelFeatureEdge )
+				else if ( b2PixelFeatureTypeIsEdge( type ) )
 				{
 					buffers->edges[edgeCount++] = feature;
 				}
@@ -1429,7 +1462,7 @@ uint8_t b2PixelAsset_GetFeatureType( const b2PixelAsset* asset, int x, int y )
 		return asset->featureTypes[index];
 	}
 
-	return b2PixelAsset_GetBit( asset, index ) ? b2_pixelFeatureEdge : b2_pixelFeatureEmpty;
+	return b2_pixelFeatureEmpty;
 }
 
 uint16_t b2PixelAsset_GetFeatureId( const b2PixelAsset* asset, int x, int y )
