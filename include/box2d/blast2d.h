@@ -366,14 +366,6 @@ B2_API bool b2World_BeginBlastOverlayRead(
 /// End a Blast2D overlay read view.
 B2_API void b2World_EndBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadView* view );
 
-/// Compatibility shim for legacy callers. Prefer b2Body_ApplyLinearImpulse* for Blast2D impact input.
-B2_API bool b2World_SubmitBlastImpactAtPoint(
-	b2WorldId worldId, b2BodyId bodyId, b2Vec2 worldPoint, b2Vec2 direction, float impulse, float radius, float damageHint );
-
-/// Compatibility shim for legacy callers. Prefer b2Body_ApplyForce* for Blast2D load input.
-B2_API bool b2World_SubmitBlastLoadAtPoint(
-	b2WorldId worldId, b2BodyId bodyId, b2Vec2 worldPoint, b2Vec2 force, b2BlastExternalConstraintKind kind, uint32_t constraintId );
-
 /// Commit pending Blast2D actor transitions after host-side shape metadata has been attached.
 B2_API void b2World_CommitBlastFractureTransitions( b2WorldId worldId );
 

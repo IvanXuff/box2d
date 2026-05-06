@@ -916,12 +916,12 @@ void b2Body_ApplyForce( b2BodyId bodyId, b2Vec2 force, b2Vec2 point, bool wake )
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
+	b2BlastFractureWorld_RecordBodyForce( world, body, point, force, false );
+
 	if ( body->setIndex == b2_disabledSet )
 	{
 		return;
 	}
-
-	b2BlastFractureWorld_RecordBodyForce( world, body, point, force, false );
 
 	if ( body->type != b2_dynamicBody )
 	{
@@ -946,12 +946,12 @@ void b2Body_ApplyForceToCenter( b2BodyId bodyId, b2Vec2 force, bool wake )
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
+	b2BlastFractureWorld_RecordBodyForce( world, body, b2Vec2_zero, force, true );
+
 	if ( body->setIndex == b2_disabledSet )
 	{
 		return;
 	}
-
-	b2BlastFractureWorld_RecordBodyForce( world, body, b2Vec2_zero, force, true );
 
 	if ( body->type != b2_dynamicBody )
 	{
@@ -1013,12 +1013,12 @@ void b2Body_ApplyLinearImpulse( b2BodyId bodyId, b2Vec2 impulse, b2Vec2 point, b
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
+	b2BlastFractureWorld_RecordBodyLinearImpulse( world, body, point, impulse, false );
+
 	if ( body->setIndex == b2_disabledSet )
 	{
 		return;
 	}
-
-	b2BlastFractureWorld_RecordBodyLinearImpulse( world, body, point, impulse, false );
 
 	if ( body->type != b2_dynamicBody )
 	{
@@ -1048,12 +1048,12 @@ void b2Body_ApplyLinearImpulseToCenter( b2BodyId bodyId, b2Vec2 impulse, bool wa
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
+	b2BlastFractureWorld_RecordBodyLinearImpulse( world, body, b2Vec2_zero, impulse, true );
+
 	if ( body->setIndex == b2_disabledSet )
 	{
 		return;
 	}
-
-	b2BlastFractureWorld_RecordBodyLinearImpulse( world, body, b2Vec2_zero, impulse, true );
 
 	if ( body->type != b2_dynamicBody )
 	{
