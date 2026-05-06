@@ -530,6 +530,21 @@ typedef struct b2BlastMaterialPhysics
 	float compressStrength;
 	float shearStrength;
 	float tensileStrength;
+	float onset;
+	float refineOnset;
+	float breakRatio;
+	float damageRate;
+	float recovery;
+	float branchiness;
+	float chip;
+	float grainNoise;
+	float anisotropy;
+	float fiberAngleDeg;
+	float supportReflection;
+	int32_t leafTarget;
+	int32_t maxClusterLevel;
+	int32_t startLevel;
+	uint32_t seed;
 	int32_t authoringShaderId;
 	int32_t damageShaderId;
 } b2BlastMaterialPhysics;
@@ -587,6 +602,14 @@ typedef struct b2PixelAsset
 	uint32_t topologyVersion;
 } b2PixelAsset;
 
+typedef enum b2PixelShapeUpdateKind
+{
+	b2_pixelShapeUpdateNone = 0,
+	b2_pixelShapeUpdateFullInit = 1,
+	b2_pixelShapeUpdateDirtyUpdate = 2,
+	b2_pixelShapeUpdateLocalOriginOnly = 3,
+} b2PixelShapeUpdateKind;
+
 /// Pixel shape geometry. The asset is a caller-owned immutable view and must outlive the shape.
 /// diskRadius is measured in pixel-size units; 0 selects b2_defaultPixelDiskRadius and negative values are invalid.
 /// @ingroup shape
@@ -596,6 +619,12 @@ typedef struct b2PixelShape
 	b2Vec2 localOrigin;
 	float diskRadius;
 	uint32_t topologyVersion;
+	b2PixelShapeUpdateKind updateKind;
+	int32_t dirtyX;
+	int32_t dirtyY;
+	int32_t dirtyWidth;
+	int32_t dirtyHeight;
+	uint64_t materialHash;
 } b2PixelShape;
 
 /// Configuration for building a canonical b2PixelAsset from occupancy bits.

@@ -51,6 +51,7 @@ void b2WarmStartOverflowContacts( b2StepContext* context );
 void b2SolveOverflowContacts( b2StepContext* context, bool useBias );
 void b2ApplyOverflowRestitution( b2StepContext* context );
 void b2StoreOverflowImpulses( b2StepContext* context );
+void b2ExportBlastFractureContactRows( b2StepContext* context, float timeStep );
 
 // Contacts that live within the constraint graph coloring
 void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context );

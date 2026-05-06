@@ -847,17 +847,11 @@ void b2World_Step( b2WorldId worldId, float timeStep, int subStepCount )
 	// Integrate velocities, solve velocity constraints, and integrate positions.
 	if ( timeStep > 0.0f )
 	{
+		b2BlastFractureWorld_BeginStep( world );
 		uint64_t solveTicks = b2GetTicks();
 		b2Solve( world, &context );
+		b2BlastFractureWorld_ConsumeTouchingContactsIfNoRows( world, timeStep );
 		world->profile.solve = b2GetMilliseconds( solveTicks );
-	}
-
-	// Blast2D fracture consumes solved contact/joint rows at a world-step safe point.
-	// The solver stays immutable during velocity iterations; topology commands are queued here.
-	{
-		uint64_t blastTicks = b2GetTicks();
-		b2BlastFractureWorld_CollectAndStep( world, timeStep );
-		B2_UNUSED( blastTicks );
 	}
 
 	// Update sensors
@@ -884,6 +878,10 @@ void b2World_Step( b2WorldId worldId, float timeStep, int subStepCount )
 	b2SensorEndTouchEventArray_Clear( world->sensorEndEvents + world->endEventArrayIndex );
 	b2ContactEndTouchEventArray_Clear( world->contactEndEvents + world->endEventArrayIndex );
 	world->locked = false;
+	if ( timeStep > 0.0f )
+	{
+		b2BlastFractureWorld_EndStep( world );
+	}
 	b2TracyCFrame;
 }
 

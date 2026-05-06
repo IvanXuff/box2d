@@ -1194,6 +1194,10 @@ static void b2SolverTask( int startIndex, int endIndex, uint32_t threadIndexIgno
 			}
 
 			profile->relaxImpulses += b2GetMillisecondsAndReset( &ticks );
+
+			b2BlastFractureWorld_BeginSubstep( context->world );
+			b2ExportBlastFractureContactRows( context, context->h );
+			b2BlastFractureWorld_EndSubstep( context->world );
 		}
 
 		// advance the stage according to the sub-stepping tasks just completed

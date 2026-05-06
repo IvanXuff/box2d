@@ -5,6 +5,7 @@
 
 #include "base.h"
 #include "collision.h"
+#include "id.h"
 #include "types.h"
 
 #include <stdbool.h>
@@ -140,6 +141,39 @@ typedef struct b2BlastFractureCommand
 	float value;
 } b2BlastFractureCommand;
 
+typedef enum b2BlastActorTransitionAction
+{
+	b2_blastActorTransitionNone = 0,
+	b2_blastActorTransitionCreateDynamicBody = 1,
+} b2BlastActorTransitionAction;
+
+typedef struct b2BlastActorTransition
+{
+	uint32_t transitionId;
+	b2BlastActorTransitionAction action;
+	b2BlastFractureActorId sourceActorId;
+	b2BlastFractureActorId childActorId;
+	b2BodyId sourceBodyId;
+	b2ShapeId sourceShapeId;
+	b2BodyId createdBodyId;
+	b2ShapeId createdShapeId;
+	b2BlastActorMobility sourceMobility;
+	b2BlastActorMobility targetMobility;
+	int32_t sourceMinX;
+	int32_t sourceMinY;
+	int32_t sourceMaxX;
+	int32_t sourceMaxY;
+	int32_t cellOffset;
+	int32_t cellCount;
+	uint32_t sourceTopologyRevision;
+	uint32_t childTopologyRevision;
+	uint64_t materialHash;
+	b2Vec2 worldPoint;
+	b2Vec2 linearVelocity;
+	float angularVelocity;
+	bool committed;
+} b2BlastActorTransition;
+
 typedef struct b2BlastMaterialHotData
 {
 	b2BlastMaterialId materialId;
@@ -170,6 +204,10 @@ typedef struct b2BlastLeaf
 	float mass;
 	b2BlastMaterialId dominantMaterialId;
 	uint16_t flags;
+	uint16_t minX;
+	uint16_t minY;
+	uint16_t maxX;
+	uint16_t maxY;
 	uint32_t supportConstraintMask;
 } b2BlastLeaf;
 
@@ -204,11 +242,24 @@ typedef struct b2BlastFractureDebugSnapshot
 	uint32_t reauthoredFallbackCount;
 	uint32_t legacyHostFracturePathCount;
 	uint32_t stepAllocationFallbackCount;
+	uint32_t ignoredOffTargetEventCount;
+	uint32_t unboundLoadPortDropCount;
+	uint32_t refinedThisStep;
+	uint32_t brokenThisStep;
+	uint32_t demandRecomputeCount;
+	uint32_t substepSolveCount;
 	uint32_t scratchCapacityHighWater;
 	uint32_t hotMaterialIdBytesPerCell;
 	uint32_t materialHotDataSize;
 	uint32_t leafSize;
 	uint32_t activeBondSize;
+	uint32_t clusterCount;
+	uint32_t rootClusterCount;
+	uint32_t worldAnchorCount;
+	uint32_t authoringHashLow;
+	uint32_t authoringHashHigh;
+	uint32_t impactDemandHash;
+	uint32_t loadDemandHash;
 	float maxImpactDemand;
 	float maxLoadDemand;
 	float maxDamage;
@@ -227,5 +278,19 @@ B2_API bool b2World_SubmitBlastImpactAtPoint(
 /// Submit a bound external-constraint load into the world's fracture actor pool.
 B2_API bool b2World_SubmitBlastLoadAtPoint(
 	b2WorldId worldId, b2BodyId bodyId, b2Vec2 worldPoint, b2Vec2 force, b2BlastExternalConstraintKind kind, uint32_t constraintId );
+
+/// Commit pending Blast2D actor transitions after host-side shape metadata has been attached.
+B2_API void b2World_CommitBlastFractureTransitions( b2WorldId worldId );
+
+/// Return the number of committed Blast2D actor transition rows available until the next world step.
+B2_API int32_t b2World_GetBlastFractureTransitionCount( b2WorldId worldId );
+
+/// Copy committed Blast2D actor transition rows. Rows are owned by Blast2D; this copies POD data only.
+B2_API int32_t b2World_CopyBlastFractureTransitions(
+	b2WorldId worldId, b2BlastActorTransition* transitions, int32_t transitionCapacity );
+
+/// Copy source actor cell indices for a committed transition row.
+B2_API int32_t b2World_CopyBlastFractureTransitionCells(
+	b2WorldId worldId, int32_t transitionIndex, int32_t* cells, int32_t cellCapacity );
 
 /// @}

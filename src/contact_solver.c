@@ -4,6 +4,7 @@
 #include "contact_solver.h"
 
 #include "body.h"
+#include "blast_fracture.h"
 #include "constraint_graph.h"
 #include "contact.h"
 #include "core.h"
@@ -1177,6 +1178,91 @@ typedef struct b2ContactConstraintWide
 	b2FloatW restitution;
 	b2FloatW relativeVelocity1, relativeVelocity2;
 } b2ContactConstraintWide;
+
+static b2Vec2 b2ExtractVec2W( b2Vec2W value, int lane )
+{
+	const float* x = (const float*)&value.X;
+	const float* y = (const float*)&value.Y;
+	return (b2Vec2){ x[lane], y[lane] };
+}
+
+static float b2ExtractFloatW( b2FloatW value, int lane )
+{
+	const float* v = (const float*)&value;
+	return v[lane];
+}
+
+static void b2ExportBlastFractureWidePoint( b2StepContext* context, const b2ContactConstraintWide* constraint,
+											b2ContactSim* contactSim, int lane, int pointIndex, float timeStep )
+{
+	if ( context == NULL || constraint == NULL || contactSim == NULL || pointIndex >= contactSim->manifold.pointCount )
+	{
+		return;
+	}
+
+	b2Vec2 normal = b2ExtractVec2W( constraint->normal, lane );
+	b2Vec2 anchorA = pointIndex == 0 ? b2ExtractVec2W( constraint->anchorA1, lane ) : b2ExtractVec2W( constraint->anchorA2, lane );
+	b2Vec2 anchorB = pointIndex == 0 ? b2ExtractVec2W( constraint->anchorB1, lane ) : b2ExtractVec2W( constraint->anchorB2, lane );
+	float normalImpulse = pointIndex == 0 ? b2ExtractFloatW( constraint->totalNormalImpulse1, lane )
+										  : b2ExtractFloatW( constraint->totalNormalImpulse2, lane );
+	float tangentImpulse = pointIndex == 0 ? b2ExtractFloatW( constraint->totalTangentImpulse1, lane )
+										   : b2ExtractFloatW( constraint->totalTangentImpulse2, lane );
+	float unresolvedImpulse = pointIndex == 0 ? b2ExtractFloatW( constraint->unresolvedNormalImpulse1, lane )
+											  : b2ExtractFloatW( constraint->unresolvedNormalImpulse2, lane );
+	bool yielded =
+		( pointIndex == 0 ? b2ExtractFloatW( constraint->yielded1, lane ) : b2ExtractFloatW( constraint->yielded2, lane ) ) != 0.0f;
+
+	b2BlastFractureWorld_ConsumeContactConstraintRow(
+		context->world, contactSim, pointIndex, normal, anchorA, anchorB, normalImpulse, tangentImpulse, unresolvedImpulse, yielded, timeStep );
+}
+
+void b2ExportBlastFractureContactRows( b2StepContext* context, float timeStep )
+{
+	if ( context == NULL || context->world == NULL || context->graph == NULL )
+	{
+		return;
+	}
+
+	b2ConstraintGraph* graph = context->graph;
+	b2GraphColor* overflow = graph->colors + B2_OVERFLOW_INDEX;
+	for ( int i = 0; i < overflow->contactSims.count; ++i )
+	{
+		b2ContactSim* contactSim = overflow->contactSims.data + i;
+		const b2ContactConstraint* constraint = overflow->overflowConstraints + i;
+		for ( int pointIndex = 0; pointIndex < constraint->pointCount; ++pointIndex )
+		{
+			const b2ContactConstraintPoint* point = constraint->points + pointIndex;
+			b2BlastFractureWorld_ConsumeContactConstraintRow( context->world, contactSim, pointIndex, constraint->normal, point->anchorA,
+				point->anchorB, point->totalNormalImpulse, point->totalTangentImpulse, point->unresolvedNormalImpulse, point->yielded, timeStep );
+		}
+	}
+
+	for ( int colorIndex = 0; colorIndex < B2_OVERFLOW_INDEX; ++colorIndex )
+	{
+		b2GraphColor* color = graph->colors + colorIndex;
+		if ( color->contactSims.count == 0 || color->wideConstraints == NULL )
+		{
+			continue;
+		}
+
+		int wideCount = ( color->contactSims.count + B2_SIMD_WIDTH - 1 ) / B2_SIMD_WIDTH;
+		for ( int wideIndex = 0; wideIndex < wideCount; ++wideIndex )
+		{
+			const b2ContactConstraintWide* constraint = color->wideConstraints + wideIndex;
+			for ( int lane = 0; lane < B2_SIMD_WIDTH; ++lane )
+			{
+				int contactIndex = B2_SIMD_WIDTH * wideIndex + lane;
+				if ( contactIndex >= color->contactSims.count )
+				{
+					break;
+				}
+				b2ContactSim* contactSim = color->contactSims.data + contactIndex;
+				b2ExportBlastFractureWidePoint( context, constraint, contactSim, lane, 0, timeStep );
+				b2ExportBlastFractureWidePoint( context, constraint, contactSim, lane, 1, timeStep );
+			}
+		}
+	}
+}
 
 int b2GetContactConstraintSIMDByteCount( void )
 {

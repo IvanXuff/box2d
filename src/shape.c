@@ -232,7 +232,10 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 
 	if ( shapeType == b2_pixelShape )
 	{
-		b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
+		if ( b2BlastFractureWorld_TryConsumePendingShapeActorBinding( world, body, shape, b2BlastMobilityFromBodyType( body->type ) ) == false )
+		{
+			b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
+		}
 	}
 
 	if ( def->isSensor )
@@ -1625,6 +1628,7 @@ bool b2Shape_SetPixelShape( b2ShapeId shapeId, const b2PixelShape* pixel, bool u
 
 	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
 	b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
+	b2BlastFractureWorld_EndStep( world );
 	if ( updateBodyMass )
 	{
 		b2UpdateBodyMassData( world, body );
