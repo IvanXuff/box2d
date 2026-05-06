@@ -342,6 +342,29 @@ static void b2BlastEnsureTransitionCapacity( b2BlastFractureWorld* fractureWorld
 	}
 }
 
+static void b2BlastEnsureOverlayActorViewCapacity( b2BlastFractureWorld* fractureWorld, int capacity )
+{
+	if ( fractureWorld == NULL || capacity <= fractureWorld->overlayActorViewCapacity )
+	{
+		return;
+	}
+	int oldCapacity = fractureWorld->overlayActorViewCapacity;
+	int newCapacity = oldCapacity < 16 ? 16 : oldCapacity;
+	while ( newCapacity < capacity )
+	{
+		newCapacity += newCapacity >> 1;
+	}
+	fractureWorld->overlayActorViews =
+		b2BlastResize( fractureWorld->overlayActorViews, oldCapacity, newCapacity, (int)sizeof( b2BlastOverlayActorView ) );
+	fractureWorld->overlayActorViewCapacity = newCapacity;
+}
+
+static bool b2BlastAABBOverlaps( b2AABB a, b2AABB b )
+{
+	return a.lowerBound.x <= b.upperBound.x && a.upperBound.x >= b.lowerBound.x && a.lowerBound.y <= b.upperBound.y &&
+		   a.upperBound.y >= b.lowerBound.y;
+}
+
 static b2BlastActor* b2BlastAllocActor( b2World* world, uint16_t worldId )
 {
 	if ( world == NULL )
@@ -1285,6 +1308,9 @@ void b2BlastFractureWorld_Create( b2BlastFractureWorld* fractureWorld )
 	fractureWorld->transitionCapacity = 16;
 	fractureWorld->transitions =
 		b2AllocZeroInit( fractureWorld->transitionCapacity * (int)sizeof( b2BlastActorTransition ) );
+	fractureWorld->overlayActorViewCapacity = 16;
+	fractureWorld->overlayActorViews =
+		b2AllocZeroInit( fractureWorld->overlayActorViewCapacity * (int)sizeof( b2BlastOverlayActorView ) );
 }
 
 void b2BlastFractureWorld_Destroy( b2BlastFractureWorld* fractureWorld )
@@ -1301,6 +1327,7 @@ void b2BlastFractureWorld_Destroy( b2BlastFractureWorld* fractureWorld )
 	b2Free( fractureWorld->commands, fractureWorld->commandCapacity * (int)sizeof( b2BlastFractureCommand ) );
 	b2Free( fractureWorld->transitions, fractureWorld->transitionCapacity * (int)sizeof( b2BlastActorTransition ) );
 	b2Free( fractureWorld->transitionCells, fractureWorld->transitionCellCapacity * (int)sizeof( int32_t ) );
+	b2Free( fractureWorld->overlayActorViews, fractureWorld->overlayActorViewCapacity * (int)sizeof( b2BlastOverlayActorView ) );
 	*fractureWorld = (b2BlastFractureWorld){ 0 };
 }
 
@@ -2576,6 +2603,86 @@ b2BlastFractureDebugSnapshot b2World_GetBlastFractureDebugSnapshot( b2WorldId wo
 		b2BlastFractureWorld_EndStep( world );
 	}
 	return b2BlastFractureWorld_GetDebugSnapshot( &world->blastFractureWorld );
+}
+
+bool b2World_BeginBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadQuery* query, b2BlastOverlayReadView* outView )
+{
+	if ( outView == NULL )
+	{
+		return false;
+	}
+	*outView = (b2BlastOverlayReadView){ 0 };
+	b2World* world = b2GetWorldFromId( worldId );
+	if ( world == NULL || world->locked )
+	{
+		outView->skipped = true;
+		return false;
+	}
+
+	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	fractureWorld->overlayActorViewCount = 0;
+	b2BlastEnsureOverlayActorViewCapacity( fractureWorld, fractureWorld->actorCount );
+	const bool hasQuery = query != NULL && query->worldAABB.upperBound.x >= query->worldAABB.lowerBound.x &&
+						  query->worldAABB.upperBound.y >= query->worldAABB.lowerBound.y;
+	for ( int i = 0; i < fractureWorld->actorCount; ++i )
+	{
+		const b2BlastActor* actor = fractureWorld->actors + i;
+		if ( ( actor->flags & b2_blastActorFlagInUse ) == 0 || actor->leafCount <= 0 ||
+			 actor->cellToLeaf == NULL || actor->cellToLeafCount <= 0 || actor->shapeId == B2_NULL_INDEX ||
+			 actor->bodyId == B2_NULL_INDEX )
+		{
+			continue;
+		}
+		const b2Shape* shape = b2ShapeArray_Get( &world->shapes, actor->shapeId );
+		const b2Body* body = b2BodyArray_Get( &world->bodies, actor->bodyId );
+		if ( shape == NULL || body == NULL || shape->type != b2_pixelShape || shape->pixel.asset == NULL )
+		{
+			continue;
+		}
+		if ( hasQuery && b2BlastAABBOverlaps( shape->fatAABB, query->worldAABB ) == false )
+		{
+			continue;
+		}
+
+		b2BlastOverlayActorView* view = fractureWorld->overlayActorViews + fractureWorld->overlayActorViewCount++;
+		*view = (b2BlastOverlayActorView){ 0 };
+		view->actorId = actor->id;
+		view->bodyId = (b2BodyId){ body->id + 1, world->worldId, body->generation };
+		view->shapeId = (b2ShapeId){ shape->id + 1, world->worldId, shape->generation };
+		view->mobility = actor->mobility;
+		view->transform = b2GetBodyTransformQuick( world, (b2Body*)body );
+		view->localOrigin = shape->pixel.localOrigin;
+		view->width = actor->ownedAsset.width;
+		view->height = actor->ownedAsset.height;
+		view->pixelSize = actor->ownedAsset.pixelSize;
+		view->revision = actor->revision;
+		view->topologyVersion = actor->topologyVersion;
+		view->materialHash = actor->materialHash;
+		view->leaves = actor->leaves;
+		view->leafCount = actor->leafCount;
+		view->bonds = actor->bonds;
+		view->bondCount = actor->bondCount;
+		view->cellToLeaf = actor->cellToLeaf;
+		view->cellToLeafCount = actor->cellToLeafCount;
+	}
+
+	fractureWorld->overlayDirectReadCount += 1;
+	fractureWorld->overlayReadRevision += 1;
+	outView->actors = fractureWorld->overlayActorViews;
+	outView->actorCount = fractureWorld->overlayActorViewCount;
+	outView->readRevision = fractureWorld->overlayReadRevision;
+	return true;
+}
+
+void b2World_EndBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadView* view )
+{
+	B2_UNUSED( view );
+	b2World* world = b2GetWorldFromId( worldId );
+	if ( world == NULL )
+	{
+		return;
+	}
+	world->blastFractureWorld.overlayActorViewCount = 0;
 }
 
 int32_t b2World_GetBlastFractureTransitionCount( b2WorldId worldId )

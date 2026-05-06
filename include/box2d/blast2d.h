@@ -211,6 +211,18 @@ typedef struct b2BlastLeaf
 	uint32_t supportConstraintMask;
 } b2BlastLeaf;
 
+typedef enum b2BlastLeafDebugFlags
+{
+	b2_blastLeafDebugWorldAnchor = 0x0001,
+	b2_blastLeafDebugDetached = 0x0002,
+} b2BlastLeafDebugFlags;
+
+typedef enum b2BlastBondDebugFlags
+{
+	b2_blastBondDebugBroken = 0x0001,
+	b2_blastBondDebugBreakCandidate = 0x0002,
+} b2BlastBondDebugFlags;
+
 typedef struct b2BlastActiveBond
 {
 	uint32_t leafA;
@@ -227,6 +239,42 @@ typedef struct b2BlastActiveBond
 	uint16_t flags;
 	uint16_t materialMix;
 } b2BlastActiveBond;
+
+typedef struct b2BlastOverlayReadQuery
+{
+	b2AABB worldAABB;
+	uint32_t flags;
+} b2BlastOverlayReadQuery;
+
+typedef struct b2BlastOverlayActorView
+{
+	b2BlastFractureActorId actorId;
+	b2BodyId bodyId;
+	b2ShapeId shapeId;
+	b2BlastActorMobility mobility;
+	b2Transform transform;
+	b2Vec2 localOrigin;
+	int32_t width;
+	int32_t height;
+	float pixelSize;
+	uint32_t revision;
+	uint32_t topologyVersion;
+	uint64_t materialHash;
+	const b2BlastLeaf* leaves;
+	int32_t leafCount;
+	const b2BlastActiveBond* bonds;
+	int32_t bondCount;
+	const uint32_t* cellToLeaf;
+	int32_t cellToLeafCount;
+} b2BlastOverlayActorView;
+
+typedef struct b2BlastOverlayReadView
+{
+	const b2BlastOverlayActorView* actors;
+	int32_t actorCount;
+	uint32_t readRevision;
+	bool skipped;
+} b2BlastOverlayReadView;
 
 typedef struct b2BlastFractureDebugSnapshot
 {
@@ -270,6 +318,14 @@ B2_API b2BlastFractureDebugSnapshot b2BlastFracture_GetDebugSnapshot( void );
 
 /// Return Blast2D fracture world diagnostics. This is the runtime-owned actor pool state.
 B2_API b2BlastFractureDebugSnapshot b2World_GetBlastFractureDebugSnapshot( b2WorldId worldId );
+
+/// Begin a zero-copy read of Blast2D actor graph data for overlay rendering.
+/// The returned view is valid until EndBlastOverlayRead or the next world mutation.
+B2_API bool b2World_BeginBlastOverlayRead(
+	b2WorldId worldId, const b2BlastOverlayReadQuery* query, b2BlastOverlayReadView* outView );
+
+/// End a Blast2D overlay read view.
+B2_API void b2World_EndBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadView* view );
 
 /// Submit a host-authored Blast2D impact into the world's fracture actor pool.
 B2_API bool b2World_SubmitBlastImpactAtPoint(

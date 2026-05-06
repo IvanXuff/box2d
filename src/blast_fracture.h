@@ -32,6 +32,12 @@ typedef struct b2BlastFractureWorld
 	b2BlastFractureActorId pendingShapeBindActorId;
 	bool hasPendingShapeBindActor;
 
+	b2BlastOverlayActorView* overlayActorViews;
+	int overlayActorViewCount;
+	int overlayActorViewCapacity;
+	uint32_t overlayReadRevision;
+	uint32_t overlayDirectReadCount;
+
 	uint32_t nextConstraintId;
 	uint32_t constraintRowCount;
 	uint32_t actorTransitionCount;
