@@ -168,6 +168,20 @@ static bool b2BlastActorIdValid( b2BlastFractureActorId id )
 	return id.index != UINT32_MAX && id.revision != 0;
 }
 
+static b2BlastActorMobility b2BlastMobilityFromBodyTypeLocal( b2BodyType type )
+{
+	switch ( type )
+	{
+		case b2_staticBody:
+			return b2_blastActorMobilityAnchored;
+		case b2_kinematicBody:
+			return b2_blastActorMobilityKinematic;
+		case b2_dynamicBody:
+		default:
+			return b2_blastActorMobilityDynamic;
+	}
+}
+
 static void* b2BlastResize( void* oldMem, int oldCount, int newCount, int elementSize )
 {
 	if ( newCount <= 0 )
@@ -1769,15 +1783,62 @@ void b2BlastFractureWorld_Destroy( b2BlastFractureWorld* fractureWorld )
 	*fractureWorld = (b2BlastFractureWorld){ 0 };
 }
 
+static void b2BlastFractureWorld_KeepCommittedTransitionJournal( b2BlastFractureWorld* fractureWorld )
+{
+	if ( fractureWorld == NULL || fractureWorld->transitionCount <= 0 )
+	{
+		return;
+	}
+
+	int writeTransition = 0;
+	int writeCell = 0;
+	for ( int readTransition = 0; readTransition < fractureWorld->transitionCount; ++readTransition )
+	{
+		b2BlastActorTransition transition = fractureWorld->transitions[readTransition];
+		if ( transition.committed == false )
+		{
+			continue;
+		}
+
+		if ( transition.cellCount > 0 )
+		{
+			if ( transition.cellOffset < 0 ||
+				 transition.cellOffset + transition.cellCount > fractureWorld->transitionCellCount )
+			{
+				transition.cellOffset = writeCell;
+				transition.cellCount = 0;
+			}
+			else
+			{
+				if ( transition.cellOffset != writeCell )
+				{
+					memmove(
+						fractureWorld->transitionCells + writeCell,
+						fractureWorld->transitionCells + transition.cellOffset,
+						(size_t)transition.cellCount * sizeof( int32_t ) );
+				}
+				transition.cellOffset = writeCell;
+				writeCell += transition.cellCount;
+			}
+		}
+		else
+		{
+			transition.cellOffset = writeCell;
+		}
+		fractureWorld->transitions[writeTransition++] = transition;
+	}
+	fractureWorld->transitionCount = writeTransition;
+	fractureWorld->transitionCellCount = writeCell;
+}
+
 void b2BlastFractureWorld_ClearStep( b2BlastFractureWorld* fractureWorld )
 {
 	if ( fractureWorld == NULL )
 	{
 		return;
 	}
+	b2BlastFractureWorld_KeepCommittedTransitionJournal( fractureWorld );
 	fractureWorld->commandCount = 0;
-	fractureWorld->transitionCount = 0;
-	fractureWorld->transitionCellCount = 0;
 	fractureWorld->constraintRowCount = 0;
 	fractureWorld->jointConstraintRowCount = 0;
 	fractureWorld->actorTransitionCount = 0;
@@ -2990,6 +3051,178 @@ static bool b2BlastBuildTransitionPixelAsset( b2BlastActor* child, const b2Blast
 	return true;
 }
 
+static bool b2BlastTransitionCellBelongsToSourcePrune(
+	const b2BlastFractureWorld* fractureWorld, const b2BlastActorTransition* transition, b2BlastFractureActorId sourceActorId )
+{
+	return fractureWorld != NULL && transition != NULL && transition->committed && transition->sourcePruned == false &&
+		   b2BlastActorIdEqual( transition->sourceActorId, sourceActorId ) && transition->cellCount > 0 &&
+		   transition->cellOffset >= 0 && transition->cellOffset + transition->cellCount <= fractureWorld->transitionCellCount;
+}
+
+static bool b2BlastPruneSourceActorForCommittedTransitions( b2World* world, b2BlastActor* source )
+{
+	if ( world == NULL || source == NULL || source->shapeId == B2_NULL_INDEX || source->bodyId == B2_NULL_INDEX )
+	{
+		return false;
+	}
+	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	b2Shape* sourceShape = b2ShapeArray_Get( &world->shapes, source->shapeId );
+	b2Body* sourceBody = b2BodyArray_Get( &world->bodies, source->bodyId );
+	if ( sourceShape == NULL || sourceBody == NULL || sourceShape->type != b2_pixelShape ||
+		 b2IsPixelShapeUsable( &sourceShape->pixel ) == false )
+	{
+		return false;
+	}
+
+	const b2PixelAsset* sourceAsset = sourceShape->pixel.asset;
+	const int width = sourceAsset->width;
+	const int height = sourceAsset->height;
+	const int cellCount = width * height;
+	const int wordCount = ( cellCount + 63 ) / 64;
+	if ( b2BlastEnsureOwnedPixelAssetCapacity( source, width, height ) == false )
+	{
+		fractureWorld->stepAllocationFallbackCount += 1;
+		return false;
+	}
+
+	if ( source->ownedOccupancyBits != sourceAsset->occupancyBits )
+	{
+		memset( source->ownedOccupancyBits, 0, (size_t)wordCount * sizeof( uint64_t ) );
+		if ( sourceAsset->occupancyBits != NULL && sourceAsset->occupancyWordCount >= wordCount )
+		{
+			memcpy( source->ownedOccupancyBits, sourceAsset->occupancyBits, (size_t)wordCount * sizeof( uint64_t ) );
+		}
+	}
+	if ( sourceAsset->materialIds != NULL && sourceAsset->materialIdCount >= cellCount )
+	{
+		if ( source->ownedMaterialIds != sourceAsset->materialIds )
+		{
+			memcpy( source->ownedMaterialIds, sourceAsset->materialIds, (size_t)cellCount * sizeof( b2BlastMaterialId ) );
+		}
+	}
+	else
+	{
+		memset( source->ownedMaterialIds, 0, (size_t)cellCount * sizeof( b2BlastMaterialId ) );
+	}
+
+	uint32_t topologyVersion = sourceAsset->topologyVersion + 1;
+	bool prunedAny = false;
+	for ( int transitionIndex = 0; transitionIndex < fractureWorld->transitionCount; ++transitionIndex )
+	{
+		b2BlastActorTransition* transition = fractureWorld->transitions + transitionIndex;
+		if ( b2BlastTransitionCellBelongsToSourcePrune( fractureWorld, transition, source->id ) == false )
+		{
+			continue;
+		}
+		const uint32_t transitionTopologyVersion = sourceAsset->topologyVersion + transition->transitionId + 1;
+		topologyVersion = topologyVersion > transitionTopologyVersion ? topologyVersion : transitionTopologyVersion;
+		for ( int i = 0; i < transition->cellCount; ++i )
+		{
+			const int cell = fractureWorld->transitionCells[transition->cellOffset + i];
+			if ( cell < 0 || cell >= cellCount )
+			{
+				continue;
+			}
+			source->ownedOccupancyBits[cell >> 6] &= ~( UINT64_C( 1 ) << ( cell & 63 ) );
+			source->ownedMaterialIds[cell] = 0;
+			prunedAny = true;
+		}
+	}
+	if ( prunedAny == false )
+	{
+		return false;
+	}
+
+	b2PixelAssetBuildConfig config = b2DefaultPixelAssetBuildConfig();
+	config.width = width;
+	config.height = height;
+	config.pixelSize = sourceAsset->pixelSize;
+	config.supportCornerInterval = 0;
+	config.topologyVersion = topologyVersion;
+	config.materialIds = source->ownedMaterialIds;
+	config.materialIdCount = cellCount;
+	config.materialTable = sourceAsset->materialTable;
+	config.materialHash = sourceAsset->materialHash;
+	b2PixelAssetBuildBuffers buffers = { 0 };
+	buffers.occupancyBits = source->ownedOccupancyBits;
+	buffers.occupancyWordCapacity = source->ownedOccupancyWordCapacity;
+	buffers.materialIds = source->ownedMaterialIds;
+	buffers.materialIdCapacity = source->ownedMaterialIdCapacity;
+	buffers.featureTypes = source->ownedFeatureTypes;
+	buffers.featureTypeCapacity = source->ownedFeatureTypeCapacity;
+	buffers.normalIndices = source->ownedNormalIndices;
+	buffers.normalIndexCapacity = source->ownedNormalIndexCapacity;
+	buffers.corners = source->ownedCorners;
+	buffers.cornerCapacity = source->ownedCornerCapacity;
+	buffers.edges = source->ownedEdges;
+	buffers.edgeCapacity = source->ownedEdgeCapacity;
+	buffers.rowSolidCounts = source->ownedRowSolidCounts;
+	buffers.rowSolidCountCapacity = source->ownedRowSolidCountCapacity;
+	buffers.colSolidCounts = source->ownedColSolidCounts;
+	buffers.colSolidCountCapacity = source->ownedColSolidCountCapacity;
+	buffers.scratchCells = source->ownedPixelScratch;
+	buffers.scratchCellCapacity = source->ownedPixelScratchCapacity;
+	b2PixelAssetBuildResult result =
+		b2BuildPixelAssetFromOccupancy( &config, source->ownedOccupancyBits, wordCount, &buffers );
+	if ( result.success == false )
+	{
+		fractureWorld->stepAllocationFallbackCount += 1;
+		return false;
+	}
+
+	source->ownedAsset = result.asset;
+	source->flags |= b2_blastActorFlagOwnsPixelAsset;
+	sourceShape->pixel.asset = &source->ownedAsset;
+	sourceShape->pixel.topologyVersion = source->ownedAsset.topologyVersion;
+	sourceShape->pixelAssetRevision = source->ownedAsset.topologyVersion;
+	sourceShape->localCentroid = b2GetShapeCentroid( sourceShape );
+	sourceShape->aabbMargin = b2ComputeShapeMargin( sourceShape );
+	source->topologyVersion = source->ownedAsset.topologyVersion;
+	source->materialHash = source->ownedAsset.materialHash;
+	(void)b2BlastActor_AuthorFromPixelShape( source, sourceShape );
+	source->bodyId = sourceBody->id;
+	source->shapeId = sourceShape->id;
+	source->mobility = b2BlastMobilityFromBodyTypeLocal( sourceBody->type );
+	source->flags |= b2_blastActorFlagInUse | b2_blastActorFlagOwnsPixelAsset;
+	sourceBody->blastRevision = source->revision;
+	sourceShape->blastRevision = source->revision;
+
+	bool wakeBodies = true;
+	bool destroyProxy = true;
+	b2ResetProxy( world, sourceShape, wakeBodies, destroyProxy );
+	b2UpdateBodyMassData( world, sourceBody );
+	b2WakeBody( world, sourceBody );
+
+	for ( int transitionIndex = 0; transitionIndex < fractureWorld->transitionCount; ++transitionIndex )
+	{
+		b2BlastActorTransition* transition = fractureWorld->transitions + transitionIndex;
+		if ( b2BlastTransitionCellBelongsToSourcePrune( fractureWorld, transition, source->id ) )
+		{
+			transition->sourcePruned = true;
+		}
+	}
+	return true;
+}
+
+static void b2BlastPruneCommittedTransitionSources( b2World* world )
+{
+	if ( world == NULL )
+	{
+		return;
+	}
+	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	for ( int transitionIndex = 0; transitionIndex < fractureWorld->transitionCount; ++transitionIndex )
+	{
+		const b2BlastActorTransition* transition = fractureWorld->transitions + transitionIndex;
+		if ( b2BlastTransitionCellBelongsToSourcePrune( fractureWorld, transition, transition->sourceActorId ) == false )
+		{
+			continue;
+		}
+		b2BlastActor* source = b2BlastGetActor( fractureWorld, transition->sourceActorId );
+		(void)b2BlastPruneSourceActorForCommittedTransitions( world, source );
+	}
+}
+
 static bool b2BlastCommitTransition( b2World* world, b2BlastActorTransition* transition )
 {
 	if ( world == NULL || transition == NULL || transition->committed ||
@@ -3129,6 +3362,7 @@ void b2BlastFractureWorld_EndStep( b2World* world )
 			(void)b2BlastCommitTransition( world, transition );
 		}
 	}
+	b2BlastPruneCommittedTransitionSources( world );
 }
 
 void b2BlastFractureWorld_ConsumeTouchingContactsIfNoRows( b2World* world, float timeStep )

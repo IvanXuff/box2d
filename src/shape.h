@@ -86,6 +86,7 @@ typedef struct
 
 void b2CreateShapeProxy( b2Shape* shape, b2BroadPhase* bp, b2BodyType type, b2Transform transform, bool forcePairCreation );
 void b2DestroyShapeProxy( b2Shape* shape, b2BroadPhase* bp );
+void b2ResetProxy( b2World* world, b2Shape* shape, bool wakeBodies, bool destroyProxy );
 b2ShapeId b2CreatePixelShapeBoundToBlastActor(
 	b2BodyId bodyId, const b2ShapeDef* def, const b2PixelShape* pixel, b2BlastFractureActorId actorId );
 
@@ -95,6 +96,7 @@ b2MassData b2ComputeShapeMass( const b2Shape* shape );
 b2ShapeExtent b2ComputeShapeExtent( const b2Shape* shape, b2Vec2 localCenter );
 b2AABB b2ComputeShapeAABB( const b2Shape* shape, b2Transform transform );
 b2Vec2 b2GetShapeCentroid( const b2Shape* shape );
+float b2ComputeShapeMargin( b2Shape* shape );
 float b2GetShapePerimeter( const b2Shape* shape );
 float b2GetShapeProjectedPerimeter( const b2Shape* shape, b2Vec2 line );
 

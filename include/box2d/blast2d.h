@@ -174,6 +174,7 @@ typedef struct b2BlastActorTransition
 	b2Vec2 linearVelocity;
 	float angularVelocity;
 	bool committed;
+	bool sourcePruned;
 } b2BlastActorTransition;
 
 typedef struct b2BlastMaterialHotData

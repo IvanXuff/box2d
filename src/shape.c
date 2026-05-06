@@ -40,7 +40,7 @@ static b2ChainShape* b2GetChainShape( b2World* world, b2ChainId chainId )
 	return chain;
 }
 
-static float b2ComputeShapeMargin( b2Shape* shape )
+float b2ComputeShapeMargin( b2Shape* shape )
 {
 	float margin = 0.0f;
 
@@ -1423,7 +1423,7 @@ b2Filter b2Shape_GetFilter( b2ShapeId shapeId )
 	return shape->filter;
 }
 
-static void b2ResetProxy( b2World* world, b2Shape* shape, bool wakeBodies, bool destroyProxy )
+void b2ResetProxy( b2World* world, b2Shape* shape, bool wakeBodies, bool destroyProxy )
 {
 	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
 
