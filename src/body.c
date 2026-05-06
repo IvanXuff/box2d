@@ -5,6 +5,7 @@
 
 #include "aabb.h"
 #include "array.h"
+#include "blast_fracture.h"
 #include "contact.h"
 #include "core.h"
 #include "id_pool.h"
@@ -915,7 +916,14 @@ void b2Body_ApplyForce( b2BodyId bodyId, b2Vec2 force, b2Vec2 point, bool wake )
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
-	if ( body->type != b2_dynamicBody || body->setIndex == b2_disabledSet )
+	if ( body->setIndex == b2_disabledSet )
+	{
+		return;
+	}
+
+	b2BlastFractureWorld_RecordBodyForce( world, body, point, force, false );
+
+	if ( body->type != b2_dynamicBody )
 	{
 		return;
 	}
@@ -938,7 +946,14 @@ void b2Body_ApplyForceToCenter( b2BodyId bodyId, b2Vec2 force, bool wake )
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
-	if ( body->type != b2_dynamicBody || body->setIndex == b2_disabledSet )
+	if ( body->setIndex == b2_disabledSet )
+	{
+		return;
+	}
+
+	b2BlastFractureWorld_RecordBodyForce( world, body, b2Vec2_zero, force, true );
+
+	if ( body->type != b2_dynamicBody )
 	{
 		return;
 	}
@@ -960,7 +975,14 @@ void b2Body_ApplyTorque( b2BodyId bodyId, float torque, bool wake )
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
-	if ( body->type != b2_dynamicBody || body->setIndex == b2_disabledSet )
+	if ( body->setIndex == b2_disabledSet )
+	{
+		return;
+	}
+
+	b2BlastFractureWorld_RecordIgnoredBodyTorque( world, body );
+
+	if ( body->type != b2_dynamicBody )
 	{
 		return;
 	}
@@ -991,7 +1013,14 @@ void b2Body_ApplyLinearImpulse( b2BodyId bodyId, b2Vec2 impulse, b2Vec2 point, b
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
-	if ( body->type != b2_dynamicBody || body->setIndex == b2_disabledSet )
+	if ( body->setIndex == b2_disabledSet )
+	{
+		return;
+	}
+
+	b2BlastFractureWorld_RecordBodyLinearImpulse( world, body, point, impulse, false );
+
+	if ( body->type != b2_dynamicBody )
 	{
 		return;
 	}
@@ -1019,7 +1048,14 @@ void b2Body_ApplyLinearImpulseToCenter( b2BodyId bodyId, b2Vec2 impulse, bool wa
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
-	if ( body->type != b2_dynamicBody || body->setIndex == b2_disabledSet )
+	if ( body->setIndex == b2_disabledSet )
+	{
+		return;
+	}
+
+	b2BlastFractureWorld_RecordBodyLinearImpulse( world, body, b2Vec2_zero, impulse, true );
+
+	if ( body->type != b2_dynamicBody )
 	{
 		return;
 	}
@@ -1047,7 +1083,14 @@ void b2Body_ApplyAngularImpulse( b2BodyId bodyId, float impulse, bool wake )
 	b2World* world = b2GetWorld( bodyId.world0 );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 
-	if ( body->type != b2_dynamicBody || body->setIndex == b2_disabledSet )
+	if ( body->setIndex == b2_disabledSet )
+	{
+		return;
+	}
+
+	b2BlastFractureWorld_RecordIgnoredBodyTorque( world, body );
+
+	if ( body->type != b2_dynamicBody )
 	{
 		return;
 	}

@@ -10,6 +10,7 @@
 #include "physics_world.h"
 #include "pixel_shape.h"
 #include "shape.h"
+#include "solver_set.h"
 
 #include "box2d/box2d.h"
 
@@ -392,6 +393,18 @@ static void b2BlastEnsureOverlayBondCapacity( b2BlastFractureWorld* fractureWorl
 	fractureWorld->overlayBonds =
 		b2BlastResize( fractureWorld->overlayBonds, oldCapacity, newCapacity, (int)sizeof( b2BlastActiveBond ) );
 	fractureWorld->overlayBondCapacity = newCapacity;
+}
+
+static void b2BlastEnsureBodyInputCapacity( b2BlastFractureWorld* fractureWorld, int capacity )
+{
+	if ( fractureWorld == NULL || capacity <= fractureWorld->bodyInputCapacity )
+	{
+		return;
+	}
+	int newCapacity = b2MaxInt( capacity, fractureWorld->bodyInputCapacity * 2 );
+	fractureWorld->bodyInputs = b2BlastResize(
+		fractureWorld->bodyInputs, fractureWorld->bodyInputCapacity, newCapacity, (int)sizeof( b2BlastBodyInputRecord ) );
+	fractureWorld->bodyInputCapacity = newCapacity;
 }
 
 static void b2BlastEnsureOverlayCellToActiveClusterCapacity( b2BlastFractureWorld* fractureWorld, int capacity )
@@ -1720,6 +1733,9 @@ void b2BlastFractureWorld_Create( b2BlastFractureWorld* fractureWorld )
 	fractureWorld->overlayBondCapacity = 128;
 	fractureWorld->overlayBonds =
 		b2AllocZeroInit( fractureWorld->overlayBondCapacity * (int)sizeof( b2BlastActiveBond ) );
+	fractureWorld->bodyInputCapacity = 64;
+	fractureWorld->bodyInputs =
+		b2AllocZeroInit( fractureWorld->bodyInputCapacity * (int)sizeof( b2BlastBodyInputRecord ) );
 	fractureWorld->overlayCellToActiveClusterCapacity = 512;
 	fractureWorld->overlayCellToActiveCluster =
 		b2AllocZeroInit( fractureWorld->overlayCellToActiveClusterCapacity * (int)sizeof( uint32_t ) );
@@ -1745,6 +1761,7 @@ void b2BlastFractureWorld_Destroy( b2BlastFractureWorld* fractureWorld )
 	b2Free( fractureWorld->overlayActorViews, fractureWorld->overlayActorViewCapacity * (int)sizeof( b2BlastOverlayActorView ) );
 	b2Free( fractureWorld->overlayClusters, fractureWorld->overlayClusterCapacity * (int)sizeof( b2BlastOverlayCluster ) );
 	b2Free( fractureWorld->overlayBonds, fractureWorld->overlayBondCapacity * (int)sizeof( b2BlastActiveBond ) );
+	b2Free( fractureWorld->bodyInputs, fractureWorld->bodyInputCapacity * (int)sizeof( b2BlastBodyInputRecord ) );
 	b2Free( fractureWorld->overlayCellToActiveCluster,
 			fractureWorld->overlayCellToActiveClusterCapacity * (int)sizeof( uint32_t ) );
 	b2Free( fractureWorld->overlayLeafRemapScratch,
@@ -1764,6 +1781,10 @@ void b2BlastFractureWorld_ClearStep( b2BlastFractureWorld* fractureWorld )
 	fractureWorld->constraintRowCount = 0;
 	fractureWorld->jointConstraintRowCount = 0;
 	fractureWorld->actorTransitionCount = 0;
+	fractureWorld->appliedForceLoadRowCount = 0;
+	fractureWorld->appliedImpulseImpactRowCount = 0;
+	fractureWorld->torqueInputIgnoredCount = fractureWorld->pendingTorqueInputIgnoredCount;
+	fractureWorld->pendingTorqueInputIgnoredCount = 0;
 	fractureWorld->ignoredOffTargetEventCount = 0;
 	fractureWorld->unboundLoadPortDropCount = 0;
 	fractureWorld->refinedThisStep = 0;
@@ -2660,6 +2681,140 @@ static void b2BlastConsumeJointEndpointLoad( b2World* world, b2Body* body, b2Sha
 	b2BlastApplyLoadPathFromLeaf( &world->blastFractureWorld, actor, leaf, b2Length( force ), force );
 }
 
+static bool b2BlastRecordBodyInput(
+	b2World* world, b2Body* body, b2BlastBodyInputKind kind, b2Vec2 worldPoint, b2Vec2 vector, bool useBodyCenter )
+{
+	if ( world == NULL || body == NULL || body->setIndex == b2_disabledSet || b2LengthSquared( vector ) <= 0.000001f )
+	{
+		return false;
+	}
+	b2Shape* shape = NULL;
+	b2BlastActor* actor = b2BlastFindFirstBodyActorForConstraintRow( world, body, &shape );
+	if ( actor == NULL || shape == NULL )
+	{
+		return false;
+	}
+	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	b2BlastEnsureBodyInputCapacity( fractureWorld, fractureWorld->bodyInputCount + 1 );
+	b2BlastBodyInputRecord* record = fractureWorld->bodyInputs + fractureWorld->bodyInputCount++;
+	*record = (b2BlastBodyInputRecord){ 0 };
+	record->kind = kind;
+	record->bodyId = (b2BodyId){ body->id + 1, world->worldId, body->generation };
+	record->worldPoint = worldPoint;
+	record->vector = vector;
+	record->useBodyCenter = useBodyCenter;
+	return true;
+}
+
+bool b2BlastFractureWorld_RecordBodyForce(
+	b2World* world, b2Body* body, b2Vec2 worldPoint, b2Vec2 force, bool useBodyCenter )
+{
+	return b2BlastRecordBodyInput( world, body, b2_blastBodyInputForce, worldPoint, force, useBodyCenter );
+}
+
+bool b2BlastFractureWorld_RecordBodyLinearImpulse(
+	b2World* world, b2Body* body, b2Vec2 worldPoint, b2Vec2 impulse, bool useBodyCenter )
+{
+	return b2BlastRecordBodyInput( world, body, b2_blastBodyInputImpulse, worldPoint, impulse, useBodyCenter );
+}
+
+bool b2BlastFractureWorld_RecordIgnoredBodyTorque( b2World* world, b2Body* body )
+{
+	if ( world == NULL || body == NULL || body->setIndex == b2_disabledSet )
+	{
+		return false;
+	}
+	b2Shape* shape = NULL;
+	b2BlastActor* actor = b2BlastFindFirstBodyActorForConstraintRow( world, body, &shape );
+	if ( actor == NULL )
+	{
+		return false;
+	}
+	world->blastFractureWorld.pendingTorqueInputIgnoredCount += 1;
+	return true;
+}
+
+static bool b2BlastConsumeBodyInputRecord( b2World* world, const b2BlastBodyInputRecord* record )
+{
+	if ( world == NULL || record == NULL || record->bodyId.world0 != world->worldId || b2Body_IsValid( record->bodyId ) == false ||
+		 b2LengthSquared( record->vector ) <= 0.000001f )
+	{
+		return false;
+	}
+
+	b2Body* body = b2GetBodyFullId( world, record->bodyId );
+	if ( body == NULL || body->setIndex == b2_disabledSet )
+	{
+		return false;
+	}
+
+	b2Shape* shape = NULL;
+	b2BlastActor* actor = b2BlastFindFirstBodyActorForConstraintRow( world, body, &shape );
+	if ( actor == NULL || shape == NULL )
+	{
+		return false;
+	}
+
+	b2Transform transform = b2GetBodyTransformQuick( world, body );
+	b2Vec2 worldPoint = record->worldPoint;
+	if ( record->useBodyCenter )
+	{
+		b2BodySim* bodySim = b2GetBodySim( world, body );
+		worldPoint = bodySim->center;
+	}
+	b2Vec2 localPoint = b2InvTransformPoint( transform, worldPoint );
+	int leaf = b2BlastFindEndpointLeaf( &world->blastFractureWorld, actor, shape, localPoint, false );
+	if ( leaf == B2_NULL_INDEX )
+	{
+		world->blastFractureWorld.ignoredOffTargetEventCount += 1;
+		return false;
+	}
+
+	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	fractureWorld->constraintRowCount += 1;
+	if ( record->kind == b2_blastBodyInputImpulse )
+	{
+		fractureWorld->appliedImpulseImpactRowCount += 1;
+		b2BlastApplyImpactWaveFromLeaf( fractureWorld, actor, leaf, b2Length( record->vector ), record->vector );
+	}
+	else
+	{
+		fractureWorld->appliedForceLoadRowCount += 1;
+		b2BlastApplyLoadPathFromLeaf( fractureWorld, actor, leaf, b2Length( record->vector ), record->vector );
+	}
+	return true;
+}
+
+static void b2BlastFractureWorld_ConsumePendingBodyInputs( b2World* world )
+{
+	if ( world == NULL )
+	{
+		return;
+	}
+	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	const int inputCount = fractureWorld->bodyInputCount;
+	fractureWorld->bodyInputCount = 0;
+	for ( int i = 0; i < inputCount; ++i )
+	{
+		(void)b2BlastConsumeBodyInputRecord( world, fractureWorld->bodyInputs + i );
+	}
+}
+
+void b2BlastFractureWorld_ConsumePendingBodyInputsForCompatibility( b2World* world )
+{
+	if ( world == NULL )
+	{
+		return;
+	}
+	b2BlastFractureWorld_BeginStep( world );
+	b2BlastFractureWorld_BeginSubstep( world );
+	b2BlastFractureWorld_EndSubstep( world );
+	if ( world->locked == false )
+	{
+		b2BlastFractureWorld_EndStep( world );
+	}
+}
+
 void b2BlastFractureWorld_ConsumeJointConstraintRows( b2World* world, float timeStep )
 {
 	if ( world == NULL || timeStep <= 0.0f )
@@ -2724,6 +2879,7 @@ void b2BlastFractureWorld_BeginSubstep( b2World* world )
 			b2BlastActor_ClearRuntimeDemand( fractureWorld->actors + i );
 		}
 	}
+	b2BlastFractureWorld_ConsumePendingBodyInputs( world );
 }
 
 void b2BlastFractureWorld_EndSubstep( b2World* world )
@@ -2983,6 +3139,12 @@ void b2BlastFractureWorld_ConsumeTouchingContactsIfNoRows( b2World* world, float
 	}
 
 	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	if ( fractureWorld->bodyInputCount > 0 )
+	{
+		b2BlastFractureWorld_BeginSubstep( world );
+		b2BlastFractureWorld_EndSubstep( world );
+	}
+
 	if ( fractureWorld->constraintRowCount > 0 )
 	{
 		return;
@@ -3080,6 +3242,9 @@ b2BlastFractureDebugSnapshot b2BlastFractureWorld_GetDebugSnapshot( const b2Blas
 	snapshot.constraintRowCount = fractureWorld->constraintRowCount;
 	snapshot.jointConstraintRowCount = fractureWorld->jointConstraintRowCount;
 	snapshot.actorTransitionCount = fractureWorld->actorTransitionCount;
+	snapshot.appliedForceLoadRowCount = fractureWorld->appliedForceLoadRowCount;
+	snapshot.appliedImpulseImpactRowCount = fractureWorld->appliedImpulseImpactRowCount;
+	snapshot.torqueInputIgnoredCount = fractureWorld->torqueInputIgnoredCount;
 	snapshot.reauthoredFallbackCount = fractureWorld->reauthoredFallbackCount;
 	snapshot.legacyHostFracturePathCount = fractureWorld->legacyHostFracturePathCount;
 	snapshot.stepAllocationFallbackCount = fractureWorld->stepAllocationFallbackCount;
@@ -3474,7 +3639,7 @@ bool b2World_SubmitBlastImpactAtPoint(
 	b2World* world = b2GetWorldFromId( worldId );
 	b2Body* body = b2GetBodyFullId( world, bodyId );
 	b2BlastActor* actor = b2BlastFindBodyActor( world, body );
-	if ( actor == NULL || impulse <= 0.0f )
+	if ( actor == NULL || impulse <= 0.0f || b2LengthSquared( direction ) <= 0.000001f )
 	{
 		return false;
 	}
@@ -3484,14 +3649,14 @@ bool b2World_SubmitBlastImpactAtPoint(
 	int leaf = b2BlastFindEndpointLeaf( &world->blastFractureWorld, actor, shape, localPoint, false );
 	if ( leaf == B2_NULL_INDEX )
 	{
+		world->blastFractureWorld.ignoredOffTargetEventCount += 1;
 		return false;
 	}
-	b2BlastActor_ClearRuntimeDemand( actor );
-	b2BlastApplyImpactWaveFromLeaf( &world->blastFractureWorld, actor, leaf, impulse, direction );
-	b2BlastRunDamageShader( &world->blastFractureWorld, actor );
+	b2Vec2 appliedImpulse = b2MulSV( impulse, b2Normalize( direction ) );
+	b2Body_ApplyLinearImpulse( bodyId, appliedImpulse, worldPoint, true );
 	if ( world->locked == false )
 	{
-		b2BlastFractureWorld_EndStep( world );
+		b2BlastFractureWorld_ConsumePendingBodyInputsForCompatibility( world );
 	}
 	return true;
 }
@@ -3512,28 +3677,19 @@ bool b2World_SubmitBlastLoadAtPoint(
 		world->blastFractureWorld.unboundLoadPortDropCount += 1;
 		return false;
 	}
-	if ( body->type == b2_dynamicBody )
-	{
-		b2Body_ApplyForce( bodyId, force, worldPoint, true );
-	}
-	if ( ( actor->flags & b2_blastActorFlagOwnsWorldAnchor ) == 0 )
-	{
-		return true;
-	}
 	b2Transform transform = b2GetBodyTransformQuick( world, body );
 	b2Vec2 localPoint = b2InvTransformPoint( transform, worldPoint );
 	b2Shape* shape = actor->shapeId == B2_NULL_INDEX ? NULL : b2ShapeArray_Get( &world->shapes, actor->shapeId );
 	int leaf = b2BlastFindEndpointLeaf( &world->blastFractureWorld, actor, shape, localPoint, false );
 	if ( leaf == B2_NULL_INDEX )
 	{
+		world->blastFractureWorld.ignoredOffTargetEventCount += 1;
 		return false;
 	}
-	b2BlastActor_ClearRuntimeDemand( actor );
-	b2BlastApplyLoadPathFromLeaf( &world->blastFractureWorld, actor, leaf, b2Length( force ), force );
-	b2BlastRunDamageShader( &world->blastFractureWorld, actor );
+	b2Body_ApplyForce( bodyId, force, worldPoint, true );
 	if ( world->locked == false )
 	{
-		b2BlastFractureWorld_EndStep( world );
+		b2BlastFractureWorld_ConsumePendingBodyInputsForCompatibility( world );
 	}
 	return true;
 }

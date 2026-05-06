@@ -10,6 +10,21 @@ typedef struct b2ContactSim b2ContactSim;
 typedef struct b2Shape b2Shape;
 typedef struct b2World b2World;
 
+typedef enum b2BlastBodyInputKind
+{
+	b2_blastBodyInputForce = 0,
+	b2_blastBodyInputImpulse = 1,
+} b2BlastBodyInputKind;
+
+typedef struct b2BlastBodyInputRecord
+{
+	b2BlastBodyInputKind kind;
+	b2BodyId bodyId;
+	b2Vec2 worldPoint;
+	b2Vec2 vector;
+	bool useBodyCenter;
+} b2BlastBodyInputRecord;
+
 typedef struct b2BlastFractureWorld
 {
 	struct b2BlastActor* actors;
@@ -38,6 +53,11 @@ typedef struct b2BlastFractureWorld
 	b2BlastActiveBond* overlayBonds;
 	int overlayBondCount;
 	int overlayBondCapacity;
+
+	b2BlastBodyInputRecord* bodyInputs;
+	int bodyInputCount;
+	int bodyInputCapacity;
+
 	uint32_t* overlayCellToActiveCluster;
 	int overlayCellToActiveClusterCount;
 	int overlayCellToActiveClusterCapacity;
@@ -50,6 +70,10 @@ typedef struct b2BlastFractureWorld
 	uint32_t constraintRowCount;
 	uint32_t jointConstraintRowCount;
 	uint32_t actorTransitionCount;
+	uint32_t appliedForceLoadRowCount;
+	uint32_t appliedImpulseImpactRowCount;
+	uint32_t torqueInputIgnoredCount;
+	uint32_t pendingTorqueInputIgnoredCount;
 	uint32_t reauthoredFallbackCount;
 	uint32_t legacyHostFracturePathCount;
 	uint32_t stepAllocationFallbackCount;
@@ -80,6 +104,12 @@ void b2BlastFractureWorld_BeginStep( b2World* world );
 void b2BlastFractureWorld_BeginSubstep( b2World* world );
 void b2BlastFractureWorld_EndSubstep( b2World* world );
 void b2BlastFractureWorld_EndStep( b2World* world );
+bool b2BlastFractureWorld_RecordBodyForce(
+	b2World* world, b2Body* body, b2Vec2 worldPoint, b2Vec2 force, bool useBodyCenter );
+bool b2BlastFractureWorld_RecordBodyLinearImpulse(
+	b2World* world, b2Body* body, b2Vec2 worldPoint, b2Vec2 impulse, bool useBodyCenter );
+bool b2BlastFractureWorld_RecordIgnoredBodyTorque( b2World* world, b2Body* body );
+void b2BlastFractureWorld_ConsumePendingBodyInputsForCompatibility( b2World* world );
 void b2BlastFractureWorld_ConsumeTouchingContactsIfNoRows( b2World* world, float timeStep );
 void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2ContactSim* contactSim, int pointIndex,
 														b2Vec2 normal, b2Vec2 anchorA, b2Vec2 anchorB, float normalImpulse,

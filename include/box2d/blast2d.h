@@ -322,6 +322,9 @@ typedef struct b2BlastFractureDebugSnapshot
 	uint32_t constraintRowCount;
 	uint32_t jointConstraintRowCount;
 	uint32_t actorTransitionCount;
+	uint32_t appliedForceLoadRowCount;
+	uint32_t appliedImpulseImpactRowCount;
+	uint32_t torqueInputIgnoredCount;
 	uint32_t reauthoredFallbackCount;
 	uint32_t legacyHostFracturePathCount;
 	uint32_t stepAllocationFallbackCount;
@@ -362,11 +365,11 @@ B2_API bool b2World_BeginBlastOverlayRead(
 /// End a Blast2D overlay read view.
 B2_API void b2World_EndBlastOverlayRead( b2WorldId worldId, const b2BlastOverlayReadView* view );
 
-/// Submit a host-authored Blast2D impact into the world's fracture actor pool.
+/// Compatibility shim for legacy callers. Prefer b2Body_ApplyLinearImpulse* for Blast2D impact input.
 B2_API bool b2World_SubmitBlastImpactAtPoint(
 	b2WorldId worldId, b2BodyId bodyId, b2Vec2 worldPoint, b2Vec2 direction, float impulse, float radius, float damageHint );
 
-/// Submit a bound external-constraint load into the world's fracture actor pool.
+/// Compatibility shim for legacy callers. Prefer b2Body_ApplyForce* for Blast2D load input.
 B2_API bool b2World_SubmitBlastLoadAtPoint(
 	b2WorldId worldId, b2BodyId bodyId, b2Vec2 worldPoint, b2Vec2 force, b2BlastExternalConstraintKind kind, uint32_t constraintId );
 
