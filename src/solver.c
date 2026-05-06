@@ -1197,6 +1197,7 @@ static void b2SolverTask( int startIndex, int endIndex, uint32_t threadIndexIgno
 
 			b2BlastFractureWorld_BeginSubstep( context->world );
 			b2ExportBlastFractureContactRows( context, context->h );
+			b2BlastFractureWorld_ConsumeJointConstraintRows( context->world, context->h );
 			b2BlastFractureWorld_EndSubstep( context->world );
 		}
 

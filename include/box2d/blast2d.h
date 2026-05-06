@@ -320,6 +320,7 @@ typedef struct b2BlastFractureDebugSnapshot
 	uint32_t brokenBondCount;
 	uint32_t commandCount;
 	uint32_t constraintRowCount;
+	uint32_t jointConstraintRowCount;
 	uint32_t actorTransitionCount;
 	uint32_t reauthoredFallbackCount;
 	uint32_t legacyHostFracturePathCount;
@@ -382,5 +383,8 @@ B2_API int32_t b2World_CopyBlastFractureTransitions(
 /// Copy source actor cell indices for a committed transition row.
 B2_API int32_t b2World_CopyBlastFractureTransitionCells(
 	b2WorldId worldId, int32_t transitionIndex, int32_t* cells, int32_t cellCapacity );
+
+/// Acknowledge committed Blast2D actor transition rows after host-side adoption has recorded them.
+B2_API void b2World_AcknowledgeBlastFractureTransitions( b2WorldId worldId );
 
 /// @}

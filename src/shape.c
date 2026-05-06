@@ -28,6 +28,10 @@ static b2Shape* b2GetShape( b2World* world, b2ShapeId shapeId )
 	return shape;
 }
 
+static void b2DestroyShapeInternal( b2World* world, b2Shape* shape, b2Body* body, bool wakeBodies );
+static b2ShapeId b2CreateShapeWithBlastActor(
+	b2BodyId bodyId, const b2ShapeDef* def, const void* geometry, b2ShapeType shapeType, b2BlastFractureActorId actorId );
+
 static b2ChainShape* b2GetChainShape( b2World* world, b2ChainId chainId )
 {
 	int id = chainId.index1 - 1;
@@ -107,6 +111,11 @@ static b2BlastActorMobility b2BlastMobilityFromBodyType( b2BodyType type )
 		default:
 			return b2_blastActorMobilityDynamic;
 	}
+}
+
+static bool b2BlastActorIdValidForShape( b2BlastFractureActorId actorId )
+{
+	return actorId.index != UINT32_MAX && actorId.revision != 0;
 }
 
 static void b2UpdateShapeAABBs( b2Shape* shape, b2Transform transform, b2BodyType proxyType )
@@ -205,6 +214,7 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 	shape->enableCustomFiltering = def->enableCustomFiltering;
 	shape->enableHitEvents = def->enableHitEvents;
 	shape->enablePreSolveEvents = def->enablePreSolveEvents;
+	shape->sensorIndex = B2_NULL_INDEX;
 	shape->proxyKey = B2_NULL_INDEX;
 	shape->localCentroid = b2GetShapeCentroid( shape );
 	shape->aabbMargin = b2ComputeShapeMargin( shape );
@@ -230,15 +240,6 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 	body->headShapeId = shapeId;
 	body->shapeCount += 1;
 
-	if ( shapeType == b2_pixelShape )
-	{
-		if ( ( shape->pixel.flags & b2_pixelShapeFlagDisableBlastFracture ) == 0 &&
-			 b2BlastFractureWorld_TryConsumePendingShapeActorBinding( world, body, shape, b2BlastMobilityFromBodyType( body->type ) ) == false )
-		{
-			b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
-		}
-	}
-
 	if ( def->isSensor )
 	{
 		shape->sensorIndex = world->sensors.count;
@@ -262,6 +263,13 @@ static b2Shape* b2CreateShapeInternal( b2World* world, b2Body* body, b2Transform
 
 static b2ShapeId b2CreateShape( b2BodyId bodyId, const b2ShapeDef* def, const void* geometry, b2ShapeType shapeType )
 {
+	b2BlastFractureActorId actorId = { UINT32_MAX, 0, bodyId.world0 };
+	return b2CreateShapeWithBlastActor( bodyId, def, geometry, shapeType, actorId );
+}
+
+static b2ShapeId b2CreateShapeWithBlastActor(
+	b2BodyId bodyId, const b2ShapeDef* def, const void* geometry, b2ShapeType shapeType, b2BlastFractureActorId actorId )
+{
 	B2_CHECK_DEF( def );
 	B2_ASSERT( b2IsValidFloat( def->density ) && def->density >= 0.0f );
 	B2_ASSERT( b2IsValidFloat( def->material.friction ) && def->material.friction >= 0.0f );
@@ -279,6 +287,27 @@ static b2ShapeId b2CreateShape( b2BodyId bodyId, const b2ShapeDef* def, const vo
 	b2Transform transform = b2GetBodyTransformQuick( world, body );
 
 	b2Shape* shape = b2CreateShapeInternal( world, body, transform, def, geometry, shapeType );
+	if ( shape == NULL )
+	{
+		return (b2ShapeId){ 0 };
+	}
+
+	if ( shapeType == b2_pixelShape && ( shape->pixel.flags & b2_pixelShapeFlagDisableBlastFracture ) == 0 )
+	{
+		if ( b2BlastActorIdValidForShape( actorId ) )
+		{
+			if ( b2BlastFractureWorld_BindPixelShapeActor(
+					 world, body, shape, actorId, b2BlastMobilityFromBodyType( body->type ) ) == false )
+			{
+				b2DestroyShapeInternal( world, shape, body, false );
+				return (b2ShapeId){ 0 };
+			}
+		}
+		else
+		{
+			b2BlastFractureWorld_UpsertPixelShapeActor( world, body, shape, b2BlastMobilityFromBodyType( body->type ) );
+		}
+	}
 
 	if ( def->updateBodyMass == true )
 	{
@@ -325,6 +354,17 @@ b2ShapeId b2CreatePixelShape( b2BodyId bodyId, const b2ShapeDef* def, const b2Pi
 	}
 
 	return b2CreateShape( bodyId, def, pixel, b2_pixelShape );
+}
+
+b2ShapeId b2CreatePixelShapeBoundToBlastActor(
+	b2BodyId bodyId, const b2ShapeDef* def, const b2PixelShape* pixel, b2BlastFractureActorId actorId )
+{
+	if ( b2IsPixelShapeValid( pixel ) == false || b2BlastActorIdValidForShape( actorId ) == false )
+	{
+		return b2_nullShapeId;
+	}
+
+	return b2CreateShapeWithBlastActor( bodyId, def, pixel, b2_pixelShape, actorId );
 }
 
 b2ShapeId b2CreateSegmentShape( b2BodyId bodyId, const b2ShapeDef* def, const b2Segment* segment )

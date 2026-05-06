@@ -29,9 +29,6 @@ typedef struct b2BlastFractureWorld
 	int transitionCellCapacity;
 	uint32_t nextTransitionId;
 
-	b2BlastFractureActorId pendingShapeBindActorId;
-	bool hasPendingShapeBindActor;
-
 	b2BlastOverlayActorView* overlayActorViews;
 	int overlayActorViewCount;
 	int overlayActorViewCapacity;
@@ -51,6 +48,7 @@ typedef struct b2BlastFractureWorld
 
 	uint32_t nextConstraintId;
 	uint32_t constraintRowCount;
+	uint32_t jointConstraintRowCount;
 	uint32_t actorTransitionCount;
 	uint32_t reauthoredFallbackCount;
 	uint32_t legacyHostFracturePathCount;
@@ -74,8 +72,8 @@ void b2BlastFractureWorld_ClearStep( b2BlastFractureWorld* fractureWorld );
 b2BlastFractureActorId b2BlastFractureWorld_UpsertPixelShapeActor(
 	b2World* world, b2Body* body, b2Shape* shape, b2BlastActorMobility mobility );
 void b2BlastFractureWorld_UnbindShape( b2World* world, b2Shape* shape );
-bool b2BlastFractureWorld_TryConsumePendingShapeActorBinding(
-	b2World* world, b2Body* body, b2Shape* shape, b2BlastActorMobility mobility );
+bool b2BlastFractureWorld_BindPixelShapeActor(
+	b2World* world, b2Body* body, b2Shape* shape, b2BlastFractureActorId actorId, b2BlastActorMobility mobility );
 
 void b2BlastFractureWorld_CollectAndStep( b2World* world, float timeStep );
 void b2BlastFractureWorld_BeginStep( b2World* world );
@@ -86,4 +84,5 @@ void b2BlastFractureWorld_ConsumeTouchingContactsIfNoRows( b2World* world, float
 void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2ContactSim* contactSim, int pointIndex,
 														b2Vec2 normal, b2Vec2 anchorA, b2Vec2 anchorB, float normalImpulse,
 														float tangentImpulse, float unresolvedNormalImpulse, bool yielded, float timeStep );
+void b2BlastFractureWorld_ConsumeJointConstraintRows( b2World* world, float timeStep );
 b2BlastFractureDebugSnapshot b2BlastFractureWorld_GetDebugSnapshot( const b2BlastFractureWorld* fractureWorld );

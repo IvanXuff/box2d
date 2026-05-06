@@ -6,6 +6,7 @@
 #include "body.h"
 #include "contact.h"
 #include "core.h"
+#include "joint.h"
 #include "physics_world.h"
 #include "pixel_shape.h"
 #include "shape.h"
@@ -460,6 +461,30 @@ static b2BlastActor* b2BlastAllocActor( b2World* world, uint16_t worldId )
 	actor->bodyId = B2_NULL_INDEX;
 	actor->shapeId = B2_NULL_INDEX;
 	return actor;
+}
+
+static void b2BlastRollbackAllocatedActor( b2BlastFractureWorld* fractureWorld, b2BlastActor* actor )
+{
+	if ( fractureWorld == NULL || actor == NULL || fractureWorld->actors == NULL )
+	{
+		return;
+	}
+
+	int index = (int)( actor - fractureWorld->actors );
+	if ( index < 0 || index >= fractureWorld->actorCount )
+	{
+		return;
+	}
+
+	b2BlastActor_FreeArrays( actor );
+	*actor = (b2BlastActor){ 0 };
+	actor->id.index = UINT32_MAX;
+	actor->bodyId = B2_NULL_INDEX;
+	actor->shapeId = B2_NULL_INDEX;
+	if ( index == fractureWorld->actorCount - 1 )
+	{
+		fractureWorld->actorCount -= 1;
+	}
 }
 
 static void b2BlastEnsureActorCapacity(
@@ -1736,8 +1761,8 @@ void b2BlastFractureWorld_ClearStep( b2BlastFractureWorld* fractureWorld )
 	fractureWorld->commandCount = 0;
 	fractureWorld->transitionCount = 0;
 	fractureWorld->transitionCellCount = 0;
-	fractureWorld->hasPendingShapeBindActor = false;
 	fractureWorld->constraintRowCount = 0;
+	fractureWorld->jointConstraintRowCount = 0;
 	fractureWorld->actorTransitionCount = 0;
 	fractureWorld->ignoredOffTargetEventCount = 0;
 	fractureWorld->unboundLoadPortDropCount = 0;
@@ -1828,8 +1853,8 @@ void b2BlastFractureWorld_UnbindShape( b2World* world, b2Shape* shape )
 	shape->surfaceLookupKey = 0;
 }
 
-bool b2BlastFractureWorld_TryConsumePendingShapeActorBinding(
-	b2World* world, b2Body* body, b2Shape* shape, b2BlastActorMobility mobility )
+bool b2BlastFractureWorld_BindPixelShapeActor(
+	b2World* world, b2Body* body, b2Shape* shape, b2BlastFractureActorId actorId, b2BlastActorMobility mobility )
 {
 	if ( world == NULL || body == NULL || shape == NULL || shape->type != b2_pixelShape )
 	{
@@ -1837,14 +1862,7 @@ bool b2BlastFractureWorld_TryConsumePendingShapeActorBinding(
 	}
 
 	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
-	if ( fractureWorld->hasPendingShapeBindActor == false )
-	{
-		return false;
-	}
-
-	b2BlastActor* actor = b2BlastGetActor( fractureWorld, fractureWorld->pendingShapeBindActorId );
-	fractureWorld->hasPendingShapeBindActor = false;
-	fractureWorld->pendingShapeBindActorId = b2BlastNullActorId( world->worldId );
+	b2BlastActor* actor = b2BlastGetActor( fractureWorld, actorId );
 	if ( actor == NULL )
 	{
 		return false;
@@ -2595,6 +2613,94 @@ void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2C
 	}
 }
 
+static b2BlastActor* b2BlastFindFirstBodyActorForConstraintRow( b2World* world, b2Body* body, b2Shape** outShape )
+{
+	if ( outShape != NULL )
+	{
+		*outShape = NULL;
+	}
+	if ( world == NULL || body == NULL )
+	{
+		return NULL;
+	}
+	for ( int shapeId = body->headShapeId; shapeId != B2_NULL_INDEX; )
+	{
+		b2Shape* shape = b2ShapeArray_Get( &world->shapes, shapeId );
+		b2BlastActor* actor = b2BlastGetActor( &world->blastFractureWorld, shape->blastActorId );
+		if ( actor != NULL )
+		{
+			if ( outShape != NULL )
+			{
+				*outShape = shape;
+			}
+			return actor;
+		}
+		shapeId = shape->nextShapeId;
+	}
+	return NULL;
+}
+
+static void b2BlastConsumeJointEndpointLoad( b2World* world, b2Body* body, b2Shape* shape, b2BlastActor* actor, b2Vec2 localPoint,
+											 b2Vec2 force )
+{
+	if ( world == NULL || body == NULL || actor == NULL || shape == NULL || b2LengthSquared( force ) <= 0.000001f )
+	{
+		return;
+	}
+	if ( ( actor->flags & b2_blastActorFlagOwnsWorldAnchor ) == 0 )
+	{
+		return;
+	}
+	b2Transform transform = b2GetBodyTransformQuick( world, body );
+	int leaf = b2BlastFindEndpointLeaf( &world->blastFractureWorld, actor, shape, localPoint, true );
+	if ( leaf == B2_NULL_INDEX )
+	{
+		return;
+	}
+	b2BlastApplyLoadPathFromLeaf( &world->blastFractureWorld, actor, leaf, b2Length( force ), force );
+}
+
+void b2BlastFractureWorld_ConsumeJointConstraintRows( b2World* world, float timeStep )
+{
+	if ( world == NULL || timeStep <= 0.0f )
+	{
+		return;
+	}
+	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	for ( int i = 0; i < world->joints.count; ++i )
+	{
+		b2Joint* joint = b2JointArray_Get( &world->joints, i );
+		if ( joint == NULL || joint->setIndex == B2_NULL_INDEX || joint->type != b2_targetPointJoint )
+		{
+			continue;
+		}
+		b2JointSim* sim = b2GetJointSim( world, joint );
+		if ( sim == NULL )
+		{
+			continue;
+		}
+		b2Vec2 forceOnB = b2GetTargetPointJointForce( world, sim );
+		if ( b2LengthSquared( forceOnB ) <= 0.000001f )
+		{
+			continue;
+		}
+		b2Body* bodyA = b2BodyArray_Get( &world->bodies, sim->bodyIdA );
+		b2Body* bodyB = b2BodyArray_Get( &world->bodies, sim->bodyIdB );
+		b2Shape* shapeA = NULL;
+		b2Shape* shapeB = NULL;
+		b2BlastActor* actorA = b2BlastFindFirstBodyActorForConstraintRow( world, bodyA, &shapeA );
+		b2BlastActor* actorB = b2BlastFindFirstBodyActorForConstraintRow( world, bodyB, &shapeB );
+		if ( actorA == NULL && actorB == NULL )
+		{
+			continue;
+		}
+		fractureWorld->constraintRowCount += 1;
+		fractureWorld->jointConstraintRowCount += 1;
+		b2BlastConsumeJointEndpointLoad( world, bodyA, shapeA, actorA, sim->localFrameA.p, b2Neg( forceOnB ) );
+		b2BlastConsumeJointEndpointLoad( world, bodyB, shapeB, actorB, sim->localFrameB.p, forceOnB );
+	}
+}
+
 void b2BlastFractureWorld_BeginStep( b2World* world )
 {
 	if ( world == NULL )
@@ -2751,16 +2857,23 @@ static bool b2BlastCommitTransition( b2World* world, b2BlastActorTransition* tra
 	}
 
 	b2BlastActor* child = b2BlastAllocActor( world, world->worldId );
+	if ( child == NULL )
+	{
+		fractureWorld->stepAllocationFallbackCount += 1;
+		return false;
+	}
 	child->mobility = b2_blastActorMobilityDynamic;
 	source = b2BlastGetActor( fractureWorld, transition->sourceActorId );
 	if ( source == NULL )
 	{
+		b2BlastRollbackAllocatedActor( fractureWorld, child );
 		fractureWorld->stepAllocationFallbackCount += 1;
 		return false;
 	}
 	child->materialHash = source->materialHash;
 	if ( b2BlastBuildTransitionPixelAsset( child, source, sourceShape, transition, fractureWorld->transitionCells ) == false )
 	{
+		b2BlastRollbackAllocatedActor( fractureWorld, child );
 		fractureWorld->stepAllocationFallbackCount += 1;
 		return false;
 	}
@@ -2808,6 +2921,7 @@ static bool b2BlastCommitTransition( b2World* world, b2BlastActorTransition* tra
 	b2BodyId childBodyId = b2CreateBody( worldId, &bodyDef );
 	if ( childBodyId.index1 == 0 )
 	{
+		b2BlastRollbackAllocatedActor( fractureWorld, child );
 		fractureWorld->stepAllocationFallbackCount += 1;
 		return false;
 	}
@@ -2824,12 +2938,11 @@ static bool b2BlastCommitTransition( b2World* world, b2BlastActorTransition* tra
 	pixelShape.localOrigin = b2Vec2_zero;
 	pixelShape.diskRadius = sourceShape->pixel.diskRadius;
 	pixelShape.topologyVersion = child->ownedAsset.topologyVersion;
-	fractureWorld->pendingShapeBindActorId = child->id;
-	fractureWorld->hasPendingShapeBindActor = true;
-	b2ShapeId childShapeId = b2CreatePixelShape( childBodyId, &shapeDef, &pixelShape );
+	b2ShapeId childShapeId = b2CreatePixelShapeBoundToBlastActor( childBodyId, &shapeDef, &pixelShape, child->id );
 	if ( childShapeId.index1 == 0 )
 	{
-		fractureWorld->hasPendingShapeBindActor = false;
+		b2DestroyBody( childBodyId );
+		b2BlastRollbackAllocatedActor( fractureWorld, child );
 		fractureWorld->stepAllocationFallbackCount += 1;
 		return false;
 	}
@@ -2965,6 +3078,7 @@ b2BlastFractureDebugSnapshot b2BlastFractureWorld_GetDebugSnapshot( const b2Blas
 
 	snapshot.commandCount = (uint32_t)fractureWorld->commandCount;
 	snapshot.constraintRowCount = fractureWorld->constraintRowCount;
+	snapshot.jointConstraintRowCount = fractureWorld->jointConstraintRowCount;
 	snapshot.actorTransitionCount = fractureWorld->actorTransitionCount;
 	snapshot.reauthoredFallbackCount = fractureWorld->reauthoredFallbackCount;
 	snapshot.legacyHostFracturePathCount = fractureWorld->legacyHostFracturePathCount;
@@ -3315,6 +3429,18 @@ int32_t b2World_CopyBlastFractureTransitionCells(
 	int count = b2MinInt( cellCapacity, transition->cellCount );
 	memcpy( cells, fractureWorld->transitionCells + transition->cellOffset, (size_t)count * sizeof( int32_t ) );
 	return count;
+}
+
+void b2World_AcknowledgeBlastFractureTransitions( b2WorldId worldId )
+{
+	b2World* world = b2GetWorldFromId( worldId );
+	if ( world == NULL )
+	{
+		return;
+	}
+	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
+	fractureWorld->transitionCount = 0;
+	fractureWorld->transitionCellCount = 0;
 }
 
 static b2BlastActor* b2BlastFindBodyActor( b2World* world, b2Body* body )

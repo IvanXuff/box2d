@@ -86,6 +86,8 @@ typedef struct
 
 void b2CreateShapeProxy( b2Shape* shape, b2BroadPhase* bp, b2BodyType type, b2Transform transform, bool forcePairCreation );
 void b2DestroyShapeProxy( b2Shape* shape, b2BroadPhase* bp );
+b2ShapeId b2CreatePixelShapeBoundToBlastActor(
+	b2BodyId bodyId, const b2ShapeDef* def, const b2PixelShape* pixel, b2BlastFractureActorId actorId );
 
 void b2FreeChainData( b2ChainShape* chain );
 
