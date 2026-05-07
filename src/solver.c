@@ -1167,6 +1167,27 @@ static void b2SolverTask( int startIndex, int endIndex, uint32_t threadIndexIgno
 
 			profile->solveImpulses += b2GetMillisecondsAndReset( &ticks );
 
+			// Blast2D contact damage must run before position integration. The contact solver first
+			// proposes/supports the regular rigid impulse; Blast2D then decides whether the local
+			// graph actually opened and only then can refresh a finite support cap for a correction pass.
+			b2BlastFractureWorld_BeginSubstep( context->world );
+			b2ExportBlastFractureContactRows( context, context->h );
+			b2BlastFractureWorld_ConsumeJointConstraintRows( context->world, context->h );
+			b2BlastFractureWorld_EndSubstep( context->world );
+			b2RefreshBlastFractureContactSupportCaps( context );
+
+			useBias = true;
+			b2SolveOverflowContacts( context, useBias );
+			for ( int colorIndex = 0; colorIndex < activeColorCount; ++colorIndex )
+			{
+				b2GraphColor* color = context->graph->colors + colorIndex;
+				const int wideCount = ( color->contactSims.count + B2_SIMD_WIDTH - 1 ) / B2_SIMD_WIDTH;
+				if ( wideCount > 0 )
+				{
+					b2SolveContactsTask( 0, wideCount, context, colorIndex, useBias );
+				}
+			}
+
 			// integrate positions
 			B2_ASSERT( stages[iterationStageIndex].type == b2_stageIntegratePositions );
 			syncBits = ( bodySyncIndex << 16 ) | iterationStageIndex;
@@ -1194,12 +1215,6 @@ static void b2SolverTask( int startIndex, int endIndex, uint32_t threadIndexIgno
 			}
 
 			profile->relaxImpulses += b2GetMillisecondsAndReset( &ticks );
-
-			b2BlastFractureWorld_BeginSubstep( context->world );
-			b2ExportBlastFractureContactRows( context, context->h );
-			b2BlastFractureWorld_ConsumeJointConstraintRows( context->world, context->h );
-			b2BlastFractureWorld_EndSubstep( context->world );
-			b2RefreshBlastFractureContactSupportCaps( context );
 		}
 
 		// advance the stage according to the sub-stepping tasks just completed

@@ -3367,22 +3367,41 @@ static float b2BlastContactPairEffectiveSupportCap( const b2BlastFractureContact
 			continue;
 		}
 
-		bool localConstraintBroken = false;
+		if ( ( side->actor->leaves[side->leafIndex].flags & b2_blastLeafFlagDetached ) != 0 )
+		{
+			cap = b2MinFloat( cap, side->capacity );
+			continue;
+		}
+
+		const uint32_t contactCluster = b2BlastActor_FindActiveClusterContainingLeaf( side->actor, (uint32_t)side->leafIndex );
+		if ( contactCluster == UINT32_MAX )
+		{
+			continue;
+		}
+
+		bool activeSupportOpened = false;
 		for ( int bondIndex = 0; bondIndex < side->actor->bondCount; ++bondIndex )
 		{
 			const b2BlastActiveBond* bond = side->actor->bonds + bondIndex;
-			if ( (int)bond->leafA != side->leafIndex && (int)bond->leafB != side->leafIndex )
+			if ( ( bond->flags & b2_blastBondFlagBroken ) == 0 )
 			{
 				continue;
 			}
-			if ( ( bond->flags & b2_blastBondFlagBroken ) != 0 )
+
+			const uint32_t activeA = b2BlastActor_FindActiveClusterContainingLeaf( side->actor, bond->leafA );
+			const uint32_t activeB = b2BlastActor_FindActiveClusterContainingLeaf( side->actor, bond->leafB );
+			if ( activeA == UINT32_MAX || activeB == UINT32_MAX || activeA == activeB )
 			{
-				localConstraintBroken = true;
+				continue;
+			}
+			if ( activeA == contactCluster || activeB == contactCluster )
+			{
+				activeSupportOpened = true;
 				break;
 			}
 		}
 
-		if ( localConstraintBroken )
+		if ( activeSupportOpened )
 		{
 			cap = b2MinFloat( cap, side->capacity );
 		}

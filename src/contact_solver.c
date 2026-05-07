@@ -1251,8 +1251,6 @@ void b2RefreshBlastFractureContactSupportCaps( b2StepContext* context )
 			b2ContactConstraintPoint* point = constraint->points + pointIndex;
 			point->yieldImpulse = b2BlastFractureWorld_ComputeContactYieldImpulse(
 				world, contactSim, pointIndex, constraint->normal, point->anchorA, point->anchorB, point->relativeVelocity );
-			point->normalImpulse = b2MinFloat( point->normalImpulse, point->yieldImpulse );
-			point->requiredNormalImpulse = b2MaxFloat( point->requiredNormalImpulse, point->normalImpulse );
 		}
 	}
 
@@ -1291,18 +1289,10 @@ void b2RefreshBlastFractureContactSupportCaps( b2StepContext* context )
 					if ( pointIndex == 0 )
 					{
 						( (float*)&constraint->yieldImpulse1 )[lane] = cap;
-						( (float*)&constraint->normalImpulse1 )[lane] =
-							b2MinFloat( ( (float*)&constraint->normalImpulse1 )[lane], cap );
-						( (float*)&constraint->requiredNormalImpulse1 )[lane] = b2MaxFloat(
-							( (float*)&constraint->requiredNormalImpulse1 )[lane], ( (float*)&constraint->normalImpulse1 )[lane] );
 					}
 					else
 					{
 						( (float*)&constraint->yieldImpulse2 )[lane] = cap;
-						( (float*)&constraint->normalImpulse2 )[lane] =
-							b2MinFloat( ( (float*)&constraint->normalImpulse2 )[lane], cap );
-						( (float*)&constraint->requiredNormalImpulse2 )[lane] = b2MaxFloat(
-							( (float*)&constraint->requiredNormalImpulse2 )[lane], ( (float*)&constraint->normalImpulse2 )[lane] );
 					}
 				}
 			}
