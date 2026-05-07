@@ -21,7 +21,11 @@ enum
 	b2_maxPixelRawContacts = 96,
 	b2_maxPixelEmbeddedExitSearch = 256,
 	b2_maxPixelEdgeSuppressionSlots = 32,
+	b2_maxPixelContinuousSamples = 32,
+	b2_pixelContinuousRefineIterations = 4,
 };
+
+static const float b2_pixelContinuousTunnelThreshold = 0.4f;
 
 typedef struct b2PixelRawContact
 {
@@ -103,6 +107,142 @@ static void b2PublishPixelStats( const b2PixelRawBuffer* buffer, const b2Manifol
 static b2Vec2 b2PixelShape_GetWorldCenter( const b2PixelShape* shape, b2Transform xf )
 {
 	return b2TransformPoint( xf, b2GetPixelShapeCentroid( shape ) );
+}
+
+static b2Manifold b2SamplePixelContinuousManifold( const b2PixelShape* pixelA, const b2Sweep* sweepA, const b2PixelShape* pixelB,
+												   const b2Sweep* sweepB, float fraction, b2PixelShapeContinuousStats* stats )
+{
+	if ( stats != NULL )
+	{
+		stats->queryCount += 1;
+	}
+
+	b2Transform xfA = b2GetSweepTransform( sweepA, fraction );
+	b2Transform xfB = b2GetSweepTransform( sweepB, fraction );
+	return b2CollidePixelShapesWithStats( pixelA, xfA, pixelB, xfB, NULL );
+}
+
+static float b2ComputePixelSweepMotionBound( const b2PixelShape* pixelA, const b2Sweep* sweepA, const b2PixelShape* pixelB,
+											 const b2Sweep* sweepB, float maxFraction )
+{
+	b2Transform xfA1 = b2GetSweepTransform( sweepA, 0.0f );
+	b2Transform xfA2 = b2GetSweepTransform( sweepA, maxFraction );
+	b2Transform xfB1 = b2GetSweepTransform( sweepB, 0.0f );
+	b2Transform xfB2 = b2GetSweepTransform( sweepB, maxFraction );
+
+	b2Vec2 centerA1 = b2PixelShape_GetWorldCenter( pixelA, xfA1 );
+	b2Vec2 centerA2 = b2PixelShape_GetWorldCenter( pixelA, xfA2 );
+	b2Vec2 centerB1 = b2PixelShape_GetWorldCenter( pixelB, xfB1 );
+	b2Vec2 centerB2 = b2PixelShape_GetWorldCenter( pixelB, xfB2 );
+	b2Vec2 relativeDelta = b2Sub( b2Sub( centerB2, centerB1 ), b2Sub( centerA2, centerA1 ) );
+
+	float extentA = b2GetPixelShapeMaxExtent( pixelA, b2GetPixelShapeCentroid( pixelA ) );
+	float extentB = b2GetPixelShapeMaxExtent( pixelB, b2GetPixelShapeCentroid( pixelB ) );
+	float angularA = extentA * b2AbsFloat( b2RelativeAngle( xfA1.q, xfA2.q ) );
+	float angularB = extentB * b2AbsFloat( b2RelativeAngle( xfB1.q, xfB2.q ) );
+	return b2Length( relativeDelta ) + angularA + angularB;
+}
+
+b2PixelShapeContinuousResult b2ComputePixelShapeContinuousHit( const b2PixelShape* pixelA, b2Sweep sweepA,
+															  const b2PixelShape* pixelB, b2Sweep sweepB,
+															  float maxFraction, b2PixelShapeContinuousStats* stats )
+{
+	b2PixelShapeContinuousResult result = {
+		.hit = false,
+		.fraction = maxFraction,
+		.point = b2Vec2_zero,
+		.normal = b2Vec2_zero,
+	};
+
+	if ( stats != NULL )
+	{
+		*stats = (b2PixelShapeContinuousStats){ 0 };
+	}
+
+	if ( maxFraction <= 0.0f || b2IsPixelShapeUsable( pixelA ) == false || b2IsPixelShapeUsable( pixelB ) == false )
+	{
+		return result;
+	}
+
+	maxFraction = b2MinFloat( maxFraction, 1.0f );
+
+	b2Manifold initial = b2SamplePixelContinuousManifold( pixelA, &sweepA, pixelB, &sweepB, 0.0f, stats );
+	if ( initial.pointCount > 0 )
+	{
+		if ( stats != NULL )
+		{
+			stats->initialOverlap = true;
+		}
+		return result;
+	}
+
+	float pixelSize = b2MinFloat( pixelA->asset->pixelSize, pixelB->asset->pixelSize );
+	float threshold = b2_pixelContinuousTunnelThreshold * pixelSize;
+	if ( threshold <= 0.0f )
+	{
+		return result;
+	}
+
+	float motionBound = b2ComputePixelSweepMotionBound( pixelA, &sweepA, pixelB, &sweepB, maxFraction );
+	int sampleCount = b2MaxInt( 1, (int)ceilf( motionBound / threshold ) );
+	if ( sampleCount > b2_maxPixelContinuousSamples )
+	{
+		sampleCount = b2_maxPixelContinuousSamples;
+		if ( stats != NULL )
+		{
+			stats->sampleLimitReached = true;
+		}
+	}
+
+	float previousFraction = 0.0f;
+	for ( int i = 1; i <= sampleCount; ++i )
+	{
+		float sampleFraction = maxFraction * (float)i / (float)sampleCount;
+		if ( stats != NULL )
+		{
+			stats->sampleCount += 1;
+		}
+
+		b2Manifold manifold = b2SamplePixelContinuousManifold( pixelA, &sweepA, pixelB, &sweepB, sampleFraction, stats );
+		if ( manifold.pointCount == 0 )
+		{
+			previousFraction = sampleFraction;
+			continue;
+		}
+
+		float low = previousFraction;
+		float high = sampleFraction;
+		float bestFraction = sampleFraction;
+		b2Manifold bestManifold = manifold;
+		for ( int refineIndex = 0; refineIndex < b2_pixelContinuousRefineIterations; ++refineIndex )
+		{
+			float mid = 0.5f * ( low + high );
+			if ( stats != NULL )
+			{
+				stats->refineCount += 1;
+			}
+
+			b2Manifold refined = b2SamplePixelContinuousManifold( pixelA, &sweepA, pixelB, &sweepB, mid, stats );
+			if ( refined.pointCount > 0 )
+			{
+				high = mid;
+				bestFraction = mid;
+				bestManifold = refined;
+			}
+			else
+			{
+				low = mid;
+			}
+		}
+
+		result.hit = true;
+		result.fraction = bestFraction;
+		result.normal = bestManifold.normal;
+		result.point = bestManifold.points[0].clipPoint;
+		return result;
+	}
+
+	return result;
 }
 
 static uint16_t b2PixelFeatureIdFromRef( const b2PixelAsset* asset, const b2PixelFeatureRef* ref )

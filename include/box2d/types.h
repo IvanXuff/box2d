@@ -528,6 +528,16 @@ typedef struct b2Profile
 	float sensors;
 } b2Profile;
 
+/// PixelShape continuous collision counters for the most recent step.
+typedef struct b2PixelShapeCcdCounters
+{
+	int64_t queryCount;
+	int64_t sampleCount;
+	int64_t hitCount;
+	int64_t refineCount;
+	int64_t dynamicPairCount;
+} b2PixelShapeCcdCounters;
+
 /// Counters that give details of the simulation size.
 typedef struct b2Counters
 {
