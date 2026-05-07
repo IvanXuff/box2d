@@ -822,12 +822,18 @@ typedef struct b2BlastAuthoringParams
 	bool masonryMortar;
 } b2BlastAuthoringParams;
 
+enum
+{
+	b2_blastTargetLeafEdgeCells = 8,
+	b2_blastTargetActiveEdgeCells = 64,
+};
+
 static b2BlastAuthoringParams b2BlastDefaultAuthoringParams( void )
 {
 	b2BlastAuthoringParams params = { 0 };
 	params.leafTarget = 150;
 	params.maxClusterLevel = 3;
-	params.startLevel = 2;
+	params.startLevel = 3;
 	params.seed = 13;
 	params.shaderId = b2_blastShaderChaos;
 	params.seedSpacing = 3.3f;
@@ -889,19 +895,30 @@ static b2BlastAuthoringParams b2BlastAuthoringParamsFromAsset( const b2PixelAsse
 
 static float b2BlastAuthoringTargetLeafCellArea( const b2BlastAuthoringParams* params )
 {
-	const float spacing = params != NULL ? b2MaxFloat( 1.0f, params->seedSpacing ) : 3.3f;
-	return b2MaxFloat( 2.0f, 0.5f * spacing * spacing );
+	(void)params;
+	return (float)( b2_blastTargetLeafEdgeCells * b2_blastTargetLeafEdgeCells );
+}
+
+static float b2BlastAuthoringTargetLevelCellEdge( int level )
+{
+	float targetEdge = (float)b2_blastTargetLeafEdgeCells;
+	for ( int i = 0; i < level; ++i )
+	{
+		targetEdge *= 2.0f;
+	}
+	return b2MaxFloat( 1.0f, targetEdge );
+}
+
+static float b2BlastAuthoringTargetLevelCellArea( int level )
+{
+	const float targetEdge = b2BlastAuthoringTargetLevelCellEdge( level );
+	return targetEdge * targetEdge;
 }
 
 static float b2BlastAuthoringTargetActiveCellArea( const b2BlastAuthoringParams* params )
 {
-	float targetArea = b2BlastAuthoringTargetLeafCellArea( params );
-	const int startLevel = params != NULL ? b2MaxInt( 0, params->startLevel ) : 0;
-	for ( int level = 1; level < startLevel; ++level )
-	{
-		targetArea *= 4.0f;
-	}
-	return b2MaxFloat( 1.0f, targetArea );
+	const int startLevel = params != NULL ? b2MaxInt( 0, params->startLevel ) : 3;
+	return b2MaxFloat( 1.0f, b2BlastAuthoringTargetLevelCellArea( startLevel ) );
 }
 
 static b2BlastAuthoringParams b2BlastAuthoringParamsFromActor( const b2BlastActor* actor )
@@ -1138,7 +1155,82 @@ static int b2BlastCluster_CellCount( const b2BlastActor* actor, const b2BlastClu
 	return cellCount;
 }
 
-static bool b2BlastActor_AddActiveClustersByArea( b2BlastActor* actor, uint32_t clusterId, float targetCellArea )
+static int b2BlastCluster_CellWidth( const b2BlastCluster* cluster )
+{
+	if ( cluster == NULL || cluster->minX == UINT16_MAX )
+	{
+		return 0;
+	}
+	return b2MaxInt( 0, (int)cluster->maxX - (int)cluster->minX + 1 );
+}
+
+static int b2BlastCluster_CellHeight( const b2BlastCluster* cluster )
+{
+	if ( cluster == NULL || cluster->minY == UINT16_MAX )
+	{
+		return 0;
+	}
+	return b2MaxInt( 0, (int)cluster->maxY - (int)cluster->minY + 1 );
+}
+
+static bool b2BlastCluster_WithinTargetCellScale(
+	const b2BlastActor* actor, const b2BlastCluster* cluster, float targetCellArea, float targetCellEdge )
+{
+	return (float)b2BlastCluster_CellCount( actor, cluster ) <= targetCellArea &&
+		   (float)b2BlastCluster_CellWidth( cluster ) <= targetCellEdge &&
+		   (float)b2BlastCluster_CellHeight( cluster ) <= targetCellEdge;
+}
+
+static bool b2BlastCluster_ShouldRefineForShape(
+	const b2BlastActor* actor, const b2BlastCluster* cluster, float targetCellEdge )
+{
+	if ( actor == NULL || cluster == NULL || cluster->level == 0 || cluster->childCount == 0 )
+	{
+		return false;
+	}
+
+	const int width = b2BlastCluster_CellWidth( cluster );
+	const int height = b2BlastCluster_CellHeight( cluster );
+	if ( width <= 0 || height <= 0 )
+	{
+		return false;
+	}
+
+	const int minDim = b2MinInt( width, height );
+	const int maxDim = b2MaxInt( width, height );
+	const int cellCount = b2BlastCluster_CellCount( actor, cluster );
+	const float fill = (float)cellCount / b2MaxFloat( 1.0f, (float)( width * height ) );
+	const float leafEdge = b2BlastAuthoringTargetLevelCellEdge( 0 );
+
+	if ( (float)minDim <= leafEdge && (float)maxDim > leafEdge * 1.5f )
+	{
+		return true;
+	}
+	if ( (float)minDim <= targetCellEdge * 0.5f && (float)maxDim >= targetCellEdge * 0.75f )
+	{
+		return true;
+	}
+	if ( fill < 0.65f && (float)maxDim >= targetCellEdge * 0.75f )
+	{
+		return true;
+	}
+	return false;
+}
+
+static bool b2BlastPendingClusterReachedTargetScale(
+	const b2BlastActor* actor, const b2BlastCluster* cluster, float targetCellArea, float targetCellEdge )
+{
+	if ( cluster == NULL || cluster->childCount == 0 )
+	{
+		return false;
+	}
+	return (float)b2BlastCluster_CellCount( actor, cluster ) >= targetCellArea ||
+		   (float)b2BlastCluster_CellWidth( cluster ) >= targetCellEdge ||
+		   (float)b2BlastCluster_CellHeight( cluster ) >= targetCellEdge;
+}
+
+static bool b2BlastActor_AddActiveClustersByArea(
+	b2BlastActor* actor, uint32_t clusterId, float targetCellArea, float targetCellEdge )
 {
 	if ( actor == NULL || clusterId >= (uint32_t)actor->clusterCount )
 	{
@@ -1146,8 +1238,9 @@ static bool b2BlastActor_AddActiveClustersByArea( b2BlastActor* actor, uint32_t 
 	}
 
 	const b2BlastCluster* cluster = actor->clusters + clusterId;
-	const int clusterCellCount = b2BlastCluster_CellCount( actor, cluster );
-	if ( cluster->level == 0 || cluster->childCount == 0 || clusterCellCount <= b2MaxInt( 1, (int)ceilf( targetCellArea ) ) )
+	const bool withinTarget = b2BlastCluster_WithinTargetCellScale( actor, cluster, targetCellArea, targetCellEdge );
+	const bool shapeNeedsRefine = b2BlastCluster_ShouldRefineForShape( actor, cluster, targetCellEdge );
+	if ( cluster->level == 0 || cluster->childCount == 0 || ( withinTarget && shapeNeedsRefine == false ) )
 	{
 		return b2BlastActor_AddActiveCluster( actor, clusterId );
 	}
@@ -1160,7 +1253,7 @@ static bool b2BlastActor_AddActiveClustersByArea( b2BlastActor* actor, uint32_t 
 			continue;
 		}
 		const uint32_t childId = actor->clusterChildren[cluster->firstChild + childRef];
-		addedChild = b2BlastActor_AddActiveClustersByArea( actor, childId, targetCellArea ) || addedChild;
+		addedChild = b2BlastActor_AddActiveClustersByArea( actor, childId, targetCellArea, targetCellEdge ) || addedChild;
 	}
 	if ( addedChild == false )
 	{
@@ -1186,7 +1279,10 @@ static void b2BlastActor_ResetActiveClustersByArea( b2BlastActor* actor, const b
 
 	if ( actor->rootCluster != UINT32_MAX && actor->rootCluster < (uint32_t)actor->clusterCount )
 	{
-		(void)b2BlastActor_AddActiveClustersByArea( actor, actor->rootCluster, b2BlastAuthoringTargetActiveCellArea( params ) );
+		const int startLevel = params != NULL ? b2MaxInt( 0, params->startLevel ) : 3;
+		(void)b2BlastActor_AddActiveClustersByArea(
+			actor, actor->rootCluster, b2BlastAuthoringTargetActiveCellArea( params ),
+			b2BlastAuthoringTargetLevelCellEdge( startLevel ) );
 	}
 	if ( actor->activeClusterCount == 0 )
 	{
@@ -1335,7 +1431,7 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 	const int cellCount = width * height;
 	const int maxLeaves = b2MaxInt( 1, asset->solidCount );
 	const int maxBonds = b2MaxInt( 1, asset->solidCount * 2 );
-	const int maxClusters = b2MaxInt( maxLeaves + 1, maxLeaves * 2 + 8 );
+	const int maxClusters = b2MaxInt( maxLeaves + 1, maxLeaves * ( b2BlastDefaultAuthoringParams().maxClusterLevel + 2 ) + 8 );
 	const int maxClusterRefs = b2MaxInt( maxClusters * 4, maxLeaves * 8 + 8 );
 
 	b2BlastEnsureActorCapacity( actor, maxLeaves, maxBonds, maxClusters, maxClusterRefs, cellCount, maxLeaves );
@@ -1357,6 +1453,10 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 	actor->initialActiveLevel = 0;
 
 	int occupiedCount = 0;
+	int occupiedMinX = width;
+	int occupiedMinY = height;
+	int occupiedMaxX = -1;
+	int occupiedMaxY = -1;
 	uint32_t materialVotes[8] = { 0 };
 	b2BlastMaterialId materialVoteIds[8] = { 0 };
 	for ( int y = 0; y < height; ++y )
@@ -1369,6 +1469,10 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 			}
 			int cell = y * width + x;
 			actor->cellScratch[occupiedCount++] = cell;
+			occupiedMinX = b2MinInt( occupiedMinX, x );
+			occupiedMinY = b2MinInt( occupiedMinY, y );
+			occupiedMaxX = b2MaxInt( occupiedMaxX, x );
+			occupiedMaxY = b2MaxInt( occupiedMaxY, y );
 			b2BlastMaterialId materialId = b2PixelAsset_GetMaterialId( asset, x, y );
 			bool voted = false;
 			for ( int vote = 0; vote < 8; ++vote )
@@ -1414,7 +1518,12 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 	const b2BlastAuthoringParams params = b2BlastAuthoringParamsFromAsset( asset, dominantMaterial );
 	const float targetLeafCellArea = b2BlastAuthoringTargetLeafCellArea( &params );
 	const int areaTargetSeeds = b2MaxInt( 1, (int)ceilf( (float)occupiedCount / targetLeafCellArea ) );
-	const int targetSeeds = b2ClampInt( b2MinInt( params.leafTarget, areaTargetSeeds ), 1, maxLeaves );
+	const float targetLeafCellEdge = b2BlastAuthoringTargetLevelCellEdge( 0 );
+	const int occupiedSpanX = b2MaxInt( 1, occupiedMaxX - occupiedMinX + 1 );
+	const int occupiedSpanY = b2MaxInt( 1, occupiedMaxY - occupiedMinY + 1 );
+	const int spanTargetSeeds = b2MaxInt( 1, (int)ceilf( (float)occupiedSpanX / targetLeafCellEdge ) ) *
+								b2MaxInt( 1, (int)ceilf( (float)occupiedSpanY / targetLeafCellEdge ) );
+	const int targetSeeds = b2ClampInt( b2MaxInt( areaTargetSeeds, spanTargetSeeds ), 1, maxLeaves );
 	const float cellArea = asset->pixelSize * asset->pixelSize;
 
 	int seedCount = 0;
@@ -1434,7 +1543,7 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 			float dy = sy - actor->seedScratch[i].y;
 			minD = b2MinFloat( minD, dx * dx + dy * dy );
 		}
-		float desired = params.seedSpacing;
+		float desired = sqrtf( targetLeafCellArea );
 		if ( seedCount < 8 || minD > desired * desired * b2BlastRandRange( attempts, 0.55f, 1.2f ) )
 		{
 			actor->seedScratch[seedCount] = (b2BlastSeed){ sx, sy, b2BlastRandRange( attempts, 0.8f, 1.25f ), (uint32_t)seedCount };
@@ -1770,8 +1879,8 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 	int level = 1;
 	while ( currentCount > 1 && level <= params.maxClusterLevel && actor->clusterCount < actor->clusterCapacity )
 	{
-		const int target = level == 1 ? b2MaxInt( 1, ( currentCount + 3 ) / 4 )
-									  : ( level == 2 ? b2MaxInt( 1, ( currentCount * 10 + 31 ) / 32 ) : 1 );
+		const float targetCellArea = b2BlastAuthoringTargetLevelCellArea( level );
+		const float targetCellEdge = b2BlastAuthoringTargetLevelCellEdge( level );
 		int newStart = actor->clusterCount;
 		int newCount = 0;
 		int assignedCount = 0;
@@ -1795,9 +1904,6 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 		}
 		while ( assignedCount < currentCount && actor->clusterCount < actor->clusterCapacity )
 		{
-			const int groupsRemaining = b2MaxInt( 1, target - newCount );
-			const int remaining = currentCount - assignedCount;
-			const int desiredGroupSize = b2MaxInt( 1, ( remaining + groupsRemaining - 1 ) / groupsRemaining );
 			b2BlastCluster parent = { 0 };
 			parent.id = (uint32_t)actor->clusterCount;
 			parent.parent = UINT32_MAX;
@@ -1828,7 +1934,8 @@ static bool b2BlastActor_AuthorFromPixelShape( b2BlastActor* actor, b2Shape* sha
 			actor->componentScratch[seedCluster] = newCount;
 			actor->queueScratch[0] = seedCluster;
 			assignedCount += 1;
-			while ( (int)parent.childCount < desiredGroupSize && assignedCount < currentCount )
+			while ( b2BlastPendingClusterReachedTargetScale( actor, &parent, targetCellArea, targetCellEdge ) == false &&
+					assignedCount < currentCount )
 			{
 				int bestCluster = B2_NULL_INDEX;
 				float bestScore = FLT_MAX;
@@ -2033,8 +2140,8 @@ static bool b2BlastActor_RebuildClustersFromCurrentLeaves( b2BlastActor* actor )
 	int level = 1;
 	while ( currentCount > 1 && level <= params.maxClusterLevel && actor->clusterCount < actor->clusterCapacity )
 	{
-		const int target = level == 1 ? b2MaxInt( 1, ( currentCount + 3 ) / 4 )
-									  : ( level == 2 ? b2MaxInt( 1, ( currentCount * 10 + 31 ) / 32 ) : 1 );
+		const float targetCellArea = b2BlastAuthoringTargetLevelCellArea( level );
+		const float targetCellEdge = b2BlastAuthoringTargetLevelCellEdge( level );
 		int newStart = actor->clusterCount;
 		int newCount = 0;
 		int assignedCount = 0;
@@ -2058,9 +2165,6 @@ static bool b2BlastActor_RebuildClustersFromCurrentLeaves( b2BlastActor* actor )
 		}
 		while ( assignedCount < currentCount && actor->clusterCount < actor->clusterCapacity )
 		{
-			const int groupsRemaining = b2MaxInt( 1, target - newCount );
-			const int remaining = currentCount - assignedCount;
-			const int desiredGroupSize = b2MaxInt( 1, ( remaining + groupsRemaining - 1 ) / groupsRemaining );
 			b2BlastCluster parent = { 0 };
 			parent.id = (uint32_t)actor->clusterCount;
 			parent.parent = UINT32_MAX;
@@ -2091,7 +2195,8 @@ static bool b2BlastActor_RebuildClustersFromCurrentLeaves( b2BlastActor* actor )
 			actor->componentScratch[seedCluster] = newCount;
 			actor->queueScratch[0] = seedCluster;
 			assignedCount += 1;
-			while ( (int)parent.childCount < desiredGroupSize && assignedCount < currentCount )
+			while ( b2BlastPendingClusterReachedTargetScale( actor, &parent, targetCellArea, targetCellEdge ) == false &&
+					assignedCount < currentCount )
 			{
 				int bestCluster = B2_NULL_INDEX;
 				float bestScore = FLT_MAX;
@@ -2603,7 +2708,7 @@ static bool b2BlastActor_RepairFromPixelShapeDirtyUpdate( b2BlastActor* actor, b
 
 	const int maxLeaves = b2MaxInt( 1, asset->solidCount );
 	const int maxBonds = b2MaxInt( 1, asset->solidCount * 2 );
-	const int maxClusters = b2MaxInt( maxLeaves + 1, maxLeaves * 2 + 8 );
+	const int maxClusters = b2MaxInt( maxLeaves + 1, maxLeaves * ( b2BlastDefaultAuthoringParams().maxClusterLevel + 2 ) + 8 );
 	const int maxClusterRefs = b2MaxInt( maxClusters * 4, maxLeaves * 8 + 8 );
 	b2BlastEnsureActorCapacity( actor, maxLeaves, maxBonds, maxClusters, maxClusterRefs, newCellCount, maxLeaves );
 	if ( actor->leafCapacity < maxLeaves || actor->bondCapacity < maxBonds || actor->cellVisitScratchCapacity < newCellCount )
@@ -3661,9 +3766,22 @@ static void b2BlastRunDamageShader( b2BlastFractureWorld* fractureWorld, b2Blast
 			continue;
 		}
 		float ratio = demand / b2MaxFloat( bond->capacity, 1.0f );
-		const float onset = 0.35f;
-		const float refineOnset = 0.62f;
-		const float breakRatio = 1.0f;
+		b2BlastMaterialId materialIdA = actor->leaves[bond->leafA].dominantMaterialId;
+		b2BlastMaterialId materialIdB = actor->leaves[bond->leafB].dominantMaterialId;
+		const b2BlastMaterialPhysics* materialA = b2BlastFindMaterial( &actor->ownedAsset, materialIdA );
+		const b2BlastMaterialPhysics* materialB = b2BlastFindMaterial( &actor->ownedAsset, materialIdB );
+		float onsetA = materialA != NULL ? materialA->onset : 0.35f;
+		float onsetB = materialB != NULL ? materialB->onset : onsetA;
+		float refineOnsetA = materialA != NULL ? materialA->refineOnset : 0.62f;
+		float refineOnsetB = materialB != NULL ? materialB->refineOnset : refineOnsetA;
+		float breakRatioA = materialA != NULL ? materialA->breakRatio : 1.0f;
+		float breakRatioB = materialB != NULL ? materialB->breakRatio : breakRatioA;
+		float damageRateA = materialA != NULL ? materialA->damageRate : 0.55f;
+		float damageRateB = materialB != NULL ? materialB->damageRate : damageRateA;
+		const float onset = b2ClampFloat( 0.5f * ( onsetA + onsetB ), 0.01f, 16.0f );
+		const float refineOnset = b2ClampFloat( 0.5f * ( refineOnsetA + refineOnsetB ), 0.01f, 16.0f );
+		const float breakRatio = b2ClampFloat( 0.5f * ( breakRatioA + breakRatioB ), 0.01f, 16.0f );
+		const float damageRate = b2ClampFloat( 0.5f * ( damageRateA + damageRateB ), 0.0f, 8.0f );
 		if ( ratio > refineOnset && ( bond->flags & b2_blastBondFlagBreakCandidate ) == 0 )
 		{
 			bond->flags |= b2_blastBondFlagBreakCandidate;
@@ -3686,7 +3804,7 @@ static void b2BlastRunDamageShader( b2BlastFractureWorld* fractureWorld, b2Blast
 		}
 		if ( ratio > onset )
 		{
-			float added = ( ratio - onset ) * 0.55f;
+			float added = ( ratio - onset ) * damageRate;
 			bond->damage = b2ClampFloat( bond->damage + added, 0.0f, 1.5f );
 			bond->flags |= b2_blastBondFlagBreakCandidate;
 			fractureWorld->maxDamage = b2MaxFloat( fractureWorld->maxDamage, bond->damage );
@@ -4784,7 +4902,12 @@ static bool b2BlastActor_MigrateTransitionChildGraphFromSource( b2BlastActor* ch
 	}
 	if ( child->activeClusterCount == 0 || ( child->activeClusterCount <= 1 && child->leafCount > 1 ) )
 	{
-		b2BlastActor_ActivateLeafGraphForTransitionChild( child );
+		const b2BlastAuthoringParams params = b2BlastAuthoringParamsFromActor( child );
+		b2BlastActor_ResetActiveClustersByArea( child, &params );
+		if ( child->activeClusterCount == 0 )
+		{
+			b2BlastActor_ActivateLeafGraphForTransitionChild( child );
+		}
 	}
 	else
 	{
@@ -5288,7 +5411,6 @@ static void b2BlastAppendOverlayActiveGraph( b2BlastFractureWorld* fractureWorld
 		return;
 	}
 
-	const uint16_t activeLevel = leafGraph ? 0 : actor->initialActiveLevel;
 	b2BlastEnsureOverlayLeafRemapScratchCapacity( fractureWorld, actor->leafCount );
 	uint32_t* leafRemapScratch = fractureWorld->overlayLeafRemapScratch;
 	if ( leafRemapScratch == NULL )
@@ -5306,6 +5428,7 @@ static void b2BlastAppendOverlayActiveGraph( b2BlastFractureWorld* fractureWorld
 		fractureWorld, fractureWorld->overlayCellToActiveClusterCount + actor->cellToLeafCount );
 
 	const int clusterStart = fractureWorld->overlayClusterCount;
+	uint16_t activeLevel = 0;
 	for ( int clusterIndex = 0; clusterIndex < actor->clusterCount; ++clusterIndex )
 	{
 		const b2BlastCluster* cluster = actor->clusters + clusterIndex;
@@ -5338,6 +5461,7 @@ static void b2BlastAppendOverlayActiveGraph( b2BlastFractureWorld* fractureWorld
 		overlayCluster->minY = cluster->minY;
 		overlayCluster->maxX = cluster->maxX;
 		overlayCluster->maxY = cluster->maxY;
+		activeLevel = (uint16_t)b2MaxInt( activeLevel, cluster->level );
 
 		for ( uint32_t leafRef = 0; leafRef < cluster->leafCount; ++leafRef )
 		{
