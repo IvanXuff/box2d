@@ -493,8 +493,11 @@ typedef enum b2PixelFeatureType
 {
 	b2_pixelFeatureEmpty = 0,
 	b2_pixelFeatureInternal = 1,
-	b2_pixelFeatureEdge = 2,
-	b2_pixelFeatureCorner = 3,
+	/// Edge whose legal outward normal is constrained to the local X axis.
+	b2_pixelFeatureEdgeX = 2,
+	/// Edge whose legal outward normal is constrained to the local Y axis.
+	b2_pixelFeatureEdgeY = 3,
+	b2_pixelFeatureCorner = 4,
 } b2PixelFeatureType;
 
 /// A precomputed pixel boundary feature. The id must be stable for a given asset topology.
@@ -505,7 +508,6 @@ typedef struct b2PixelFeatureRef
 	int16_t y;
 	uint16_t id;
 	uint8_t type;
-	uint8_t normalIndex;
 } b2PixelFeatureRef;
 
 /// Blast2D material id stored in PixelShape hot resident data. Host authoring
@@ -588,7 +590,6 @@ typedef struct b2PixelAsset
 	const b2BlastMaterialTable* materialTable;
 	uint64_t materialHash;
 	const uint8_t* featureTypes;
-	const uint8_t* normalIndices;
 	const b2PixelFeatureRef* corners;
 	int32_t cornerCount;
 	const b2PixelFeatureRef* edges;
@@ -664,8 +665,6 @@ typedef struct b2PixelAssetBuildBuffers
 	int32_t materialIdCapacity;
 	uint8_t* featureTypes;
 	int32_t featureTypeCapacity;
-	uint8_t* normalIndices;
-	int32_t normalIndexCapacity;
 	b2PixelFeatureRef* corners;
 	int32_t cornerCapacity;
 	b2PixelFeatureRef* edges;
@@ -687,7 +686,6 @@ typedef struct b2PixelAssetBuildResult
 	int32_t requiredOccupancyWords;
 	int32_t requiredMaterialIds;
 	int32_t requiredFeatureTypes;
-	int32_t requiredNormalIndices;
 	int32_t requiredCorners;
 	int32_t requiredEdges;
 	int32_t requiredRowSolidCounts;
@@ -727,7 +725,6 @@ typedef struct b2PixelAssetDirtyUpdateResult
 	int32_t requiredOccupancyWords;
 	int32_t requiredMaterialIds;
 	int32_t requiredFeatureTypes;
-	int32_t requiredNormalIndices;
 	int32_t requiredCorners;
 	int32_t requiredEdges;
 	int32_t requiredRowSolidCounts;
@@ -735,7 +732,6 @@ typedef struct b2PixelAssetDirtyUpdateResult
 	int32_t dirtyCellsScanned;
 	int32_t dirtyOccupancyWordsCopied;
 	int32_t dirtyFeatureCellsCopied;
-	int32_t dirtyNormalCellsCopied;
 	int32_t dirtyRowCountsCopied;
 	int32_t dirtyColCountsCopied;
 	int32_t dirtyScratchCellsCleared;

@@ -15,6 +15,7 @@
 #include "island.h"
 #include "joint.h"
 #include "physics_world.h"
+#include "pixel_contact.h"
 #include "sensor.h"
 #include "shape.h"
 #include "solver_set.h"
@@ -310,7 +311,7 @@ static bool b2ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
 	b2Body* body = b2BodyArray_Get( &world->bodies, shape->bodyId );
 
 	b2BodySim* bodySim = b2GetBodySim( world, body );
-	B2_ASSERT( body->type == b2_staticBody || ( fastBodySim->flags & b2_isBullet ) );
+	B2_ASSERT( body->type == b2_staticBody || ( fastBodySim->flags & b2_isBullet ) || fastShape->type == b2_pixelShape );
 
 	// Skip bullets
 	if ( bodySim->flags & b2_isBullet )
@@ -397,6 +398,39 @@ static bool b2ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
 
 	if ( shape->type == b2_pixelShape || fastShape->type == b2_pixelShape )
 	{
+		if ( shape->type != b2_pixelShape || fastShape->type != b2_pixelShape || isSensor )
+		{
+			return true;
+		}
+
+		b2PixelShapeContinuousStats pixelStats = { 0 };
+		b2PixelShapeContinuousResult pixelHit =
+			b2ComputePixelShapeContinuousHit( &shape->pixel, b2MakeSweep( bodySim ), &fastShape->pixel, continuousContext->sweep,
+											  continuousContext->fraction, &pixelStats );
+
+		world->pixelShapeCcdCounters.queryCount += pixelStats.queryCount;
+		world->pixelShapeCcdCounters.sampleCount += pixelStats.sampleCount;
+		world->pixelShapeCcdCounters.refineCount += pixelStats.refineCount;
+		if ( body->type == b2_dynamicBody )
+		{
+			world->pixelShapeCcdCounters.dynamicPairCount += 1;
+		}
+
+		bool didHit = pixelHit.hit && 0.0f < pixelHit.fraction && pixelHit.fraction < continuousContext->fraction;
+		if ( didHit && ( shape->enablePreSolveEvents || fastShape->enablePreSolveEvents ) && world->preSolveFcn != NULL )
+		{
+			b2ShapeId shapeIdA = { shape->id + 1, world->worldId, shape->generation };
+			b2ShapeId shapeIdB = { fastShape->id + 1, world->worldId, fastShape->generation };
+			didHit = world->preSolveFcn( shapeIdA, shapeIdB, pixelHit.point, pixelHit.normal, world->preSolveContext );
+		}
+
+		if ( didHit )
+		{
+			world->pixelShapeCcdCounters.hitCount += 1;
+			fastBodySim->flags |= b2_hadTimeOfImpact;
+			continuousContext->fraction = pixelHit.fraction;
+		}
+
 		return true;
 	}
 
@@ -529,6 +563,10 @@ static void b2SolveContinuous( b2World* world, int bodySimIndex, b2TaskContext* 
 		if ( isBullet )
 		{
 			b2DynamicTree_Query( kinematicTree, sweptBox, B2_DEFAULT_MASK_BITS, b2ContinuousQueryCallback, &context );
+			b2DynamicTree_Query( dynamicTree, sweptBox, B2_DEFAULT_MASK_BITS, b2ContinuousQueryCallback, &context );
+		}
+		else if ( fastShape->type == b2_pixelShape )
+		{
 			b2DynamicTree_Query( dynamicTree, sweptBox, B2_DEFAULT_MASK_BITS, b2ContinuousQueryCallback, &context );
 		}
 	}

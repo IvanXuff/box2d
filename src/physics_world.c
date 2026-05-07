@@ -779,6 +779,7 @@ void b2World_Step( b2WorldId worldId, float timeStep, int subStepCount )
 	b2JointEventArray_Clear( &world->jointEvents );
 
 	world->profile = (b2Profile){ 0 };
+	world->pixelShapeCcdCounters = (b2PixelShapeCcdCounters){ 0 };
 
 	if ( timeStep == 0.0f )
 	{
@@ -1730,6 +1731,12 @@ b2Profile b2World_GetProfile( b2WorldId worldId )
 {
 	b2World* world = b2GetWorldFromId( worldId );
 	return world->profile;
+}
+
+b2PixelShapeCcdCounters b2World_GetPixelShapeCcdCounters( b2WorldId worldId )
+{
+	b2World* world = b2GetWorldFromId( worldId );
+	return world->pixelShapeCcdCounters;
 }
 
 b2Counters b2World_GetCounters( b2WorldId worldId )

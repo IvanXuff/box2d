@@ -179,6 +179,9 @@ B2_API int b2World_GetAwakeBodyCount( b2WorldId worldId );
 /// Get the current world performance profile
 B2_API b2Profile b2World_GetProfile( b2WorldId worldId );
 
+/// Get PixelShape continuous collision counters for the most recent step.
+B2_API b2PixelShapeCcdCounters b2World_GetPixelShapeCcdCounters( b2WorldId worldId );
+
 /// Get world counters and sizes
 B2_API b2Counters b2World_GetCounters( b2WorldId worldId );
 

@@ -160,6 +160,7 @@ typedef struct b2World
 	uint16_t generation;
 
 	b2Profile profile;
+	b2PixelShapeCcdCounters pixelShapeCcdCounters;
 
 	b2PreSolveFcn* preSolveFcn;
 	void* preSolveContext;
