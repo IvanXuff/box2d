@@ -151,8 +151,6 @@ typedef struct b2BlastActor
 	int ownedMaterialIdCapacity;
 	uint8_t* ownedFeatureTypes;
 	int ownedFeatureTypeCapacity;
-	uint8_t* ownedNormalIndices;
-	int ownedNormalIndexCapacity;
 	b2PixelFeatureRef* ownedCorners;
 	int ownedCornerCapacity;
 	b2PixelFeatureRef* ownedEdges;
@@ -234,7 +232,6 @@ static void b2BlastActor_FreeArrays( b2BlastActor* actor )
 	b2Free( actor->ownedOccupancyBits, actor->ownedOccupancyWordCapacity * (int)sizeof( uint64_t ) );
 	b2Free( actor->ownedMaterialIds, actor->ownedMaterialIdCapacity * (int)sizeof( b2BlastMaterialId ) );
 	b2Free( actor->ownedFeatureTypes, actor->ownedFeatureTypeCapacity * (int)sizeof( uint8_t ) );
-	b2Free( actor->ownedNormalIndices, actor->ownedNormalIndexCapacity * (int)sizeof( uint8_t ) );
 	b2Free( actor->ownedCorners, actor->ownedCornerCapacity * (int)sizeof( b2PixelFeatureRef ) );
 	b2Free( actor->ownedEdges, actor->ownedEdgeCapacity * (int)sizeof( b2PixelFeatureRef ) );
 	b2Free( actor->ownedRowSolidCounts, actor->ownedRowSolidCountCapacity * (int)sizeof( int32_t ) );
@@ -260,7 +257,6 @@ static void b2BlastActor_FreeArrays( b2BlastActor* actor )
 	actor->ownedOccupancyBits = NULL;
 	actor->ownedMaterialIds = NULL;
 	actor->ownedFeatureTypes = NULL;
-	actor->ownedNormalIndices = NULL;
 	actor->ownedCorners = NULL;
 	actor->ownedEdges = NULL;
 	actor->ownedRowSolidCounts = NULL;
@@ -287,7 +283,6 @@ static void b2BlastActor_FreeArrays( b2BlastActor* actor )
 	actor->ownedOccupancyWordCapacity = 0;
 	actor->ownedMaterialIdCapacity = 0;
 	actor->ownedFeatureTypeCapacity = 0;
-	actor->ownedNormalIndexCapacity = 0;
 	actor->ownedCornerCapacity = 0;
 	actor->ownedEdgeCapacity = 0;
 	actor->ownedRowSolidCountCapacity = 0;
@@ -655,12 +650,6 @@ static bool b2BlastEnsureOwnedPixelAssetCapacity( b2BlastActor* actor, int width
 			b2BlastResize( actor->ownedFeatureTypes, actor->ownedFeatureTypeCapacity, cellCount, (int)sizeof( uint8_t ) );
 		actor->ownedFeatureTypeCapacity = cellCount;
 	}
-	if ( cellCount > actor->ownedNormalIndexCapacity )
-	{
-		actor->ownedNormalIndices =
-			b2BlastResize( actor->ownedNormalIndices, actor->ownedNormalIndexCapacity, cellCount, (int)sizeof( uint8_t ) );
-		actor->ownedNormalIndexCapacity = cellCount;
-	}
 	if ( featureRefCapacity > actor->ownedCornerCapacity )
 	{
 		actor->ownedCorners =
@@ -692,8 +681,8 @@ static bool b2BlastEnsureOwnedPixelAssetCapacity( b2BlastActor* actor, int width
 		actor->ownedPixelScratchCapacity = cellCount;
 	}
 	return actor->ownedOccupancyBits != NULL && actor->ownedMaterialIds != NULL && actor->ownedFeatureTypes != NULL &&
-		   actor->ownedNormalIndices != NULL && actor->ownedCorners != NULL && actor->ownedEdges != NULL &&
-		   actor->ownedRowSolidCounts != NULL && actor->ownedColSolidCounts != NULL && actor->ownedPixelScratch != NULL;
+		   actor->ownedCorners != NULL && actor->ownedEdges != NULL && actor->ownedRowSolidCounts != NULL &&
+		   actor->ownedColSolidCounts != NULL && actor->ownedPixelScratch != NULL;
 }
 
 static uint32_t b2BlastHash32( uint32_t value )
@@ -4852,8 +4841,6 @@ static bool b2BlastBuildTransitionPixelAsset( b2BlastActor* child, const b2Blast
 	buffers.materialIdCapacity = child->ownedMaterialIdCapacity;
 	buffers.featureTypes = child->ownedFeatureTypes;
 	buffers.featureTypeCapacity = child->ownedFeatureTypeCapacity;
-	buffers.normalIndices = child->ownedNormalIndices;
-	buffers.normalIndexCapacity = child->ownedNormalIndexCapacity;
 	buffers.corners = child->ownedCorners;
 	buffers.cornerCapacity = child->ownedCornerCapacity;
 	buffers.edges = child->ownedEdges;
@@ -5523,8 +5510,6 @@ static bool b2BlastPruneSourceActorForCommittedTransitions( b2World* world, b2Bl
 	buffers.materialIdCapacity = source->ownedMaterialIdCapacity;
 	buffers.featureTypes = source->ownedFeatureTypes;
 	buffers.featureTypeCapacity = source->ownedFeatureTypeCapacity;
-	buffers.normalIndices = source->ownedNormalIndices;
-	buffers.normalIndexCapacity = source->ownedNormalIndexCapacity;
 	buffers.corners = source->ownedCorners;
 	buffers.cornerCapacity = source->ownedCornerCapacity;
 	buffers.edges = source->ownedEdges;
