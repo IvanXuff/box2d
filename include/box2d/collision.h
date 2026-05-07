@@ -541,6 +541,10 @@ typedef struct b2BlastMaterialPhysics
 	float anisotropy;
 	float fiberAngleDeg;
 	float supportReflection;
+	int32_t maxBreaksPerStep;
+	float contactShield;
+	float impactRange;
+	float impactDecay;
 	int32_t leafTarget;
 	int32_t maxClusterLevel;
 	int32_t startLevel;
@@ -865,13 +869,14 @@ typedef struct b2ManifoldPoint
 	/// Effective normal mass used by the velocity solver for this contact point.
 	float normalMass;
 
-	/// Upper bound for breakable-contact normal impulse. FLT_MAX means rigid contact.
+	/// Effective support cap returned by Blast2D for this contact point. FLT_MAX means the
+	/// current local graph still supports regular rigid contact.
 	float yieldImpulse;
 
-	/// Largest rigid-contact impulse requested by the solver before yield clamping.
+	/// Largest rigid-contact impulse requested by the solver before any effective support cap.
 	float requiredNormalImpulse;
 
-	/// Largest normal impulse that could not be applied because the contact yielded.
+	/// Largest normal impulse that could not be applied because the effective support cap was reached.
 	float unresolvedNormalImpulse;
 
 	/// Uniquely identifies a contact point between two shapes
@@ -880,7 +885,7 @@ typedef struct b2ManifoldPoint
 	/// Did this contact point exist the previous step?
 	bool persisted;
 
-	/// Did this point request more normal impulse than yieldImpulse during the step?
+	/// Did this point request more normal impulse than the effective support cap during the step?
 	bool yielded;
 } b2ManifoldPoint;
 

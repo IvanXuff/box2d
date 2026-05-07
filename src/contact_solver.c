@@ -1232,6 +1232,84 @@ void b2ExportBlastFractureContactRows( b2StepContext* context, float timeStep )
 	}
 }
 
+void b2RefreshBlastFractureContactSupportCaps( b2StepContext* context )
+{
+	if ( context == NULL || context->world == NULL || context->graph == NULL )
+	{
+		return;
+	}
+
+	b2World* world = context->world;
+	b2ConstraintGraph* graph = context->graph;
+	b2GraphColor* overflow = graph->colors + B2_OVERFLOW_INDEX;
+	for ( int i = 0; i < overflow->contactSims.count; ++i )
+	{
+		b2ContactSim* contactSim = overflow->contactSims.data + i;
+		b2ContactConstraint* constraint = overflow->overflowConstraints + i;
+		for ( int pointIndex = 0; pointIndex < constraint->pointCount; ++pointIndex )
+		{
+			b2ContactConstraintPoint* point = constraint->points + pointIndex;
+			point->yieldImpulse = b2BlastFractureWorld_ComputeContactYieldImpulse(
+				world, contactSim, pointIndex, constraint->normal, point->anchorA, point->anchorB, point->relativeVelocity );
+			point->normalImpulse = b2MinFloat( point->normalImpulse, point->yieldImpulse );
+			point->requiredNormalImpulse = b2MaxFloat( point->requiredNormalImpulse, point->normalImpulse );
+		}
+	}
+
+	for ( int colorIndex = 0; colorIndex < B2_OVERFLOW_INDEX; ++colorIndex )
+	{
+		b2GraphColor* color = graph->colors + colorIndex;
+		if ( color->contactSims.count == 0 || color->wideConstraints == NULL )
+		{
+			continue;
+		}
+
+		int wideCount = ( color->contactSims.count + B2_SIMD_WIDTH - 1 ) / B2_SIMD_WIDTH;
+		for ( int wideIndex = 0; wideIndex < wideCount; ++wideIndex )
+		{
+			b2ContactConstraintWide* constraint = color->wideConstraints + wideIndex;
+			for ( int lane = 0; lane < B2_SIMD_WIDTH; ++lane )
+			{
+				int contactIndex = B2_SIMD_WIDTH * wideIndex + lane;
+				if ( contactIndex >= color->contactSims.count )
+				{
+					break;
+				}
+				b2ContactSim* contactSim = color->contactSims.data + contactIndex;
+				const int pointCount = contactSim->manifold.pointCount;
+				for ( int pointIndex = 0; pointIndex < pointCount; ++pointIndex )
+				{
+					b2Vec2 normal = b2ExtractVec2W( constraint->normal, lane );
+					b2Vec2 anchorA =
+						pointIndex == 0 ? b2ExtractVec2W( constraint->anchorA1, lane ) : b2ExtractVec2W( constraint->anchorA2, lane );
+					b2Vec2 anchorB =
+						pointIndex == 0 ? b2ExtractVec2W( constraint->anchorB1, lane ) : b2ExtractVec2W( constraint->anchorB2, lane );
+					float relativeVelocity = pointIndex == 0 ? b2ExtractFloatW( constraint->relativeVelocity1, lane )
+															 : b2ExtractFloatW( constraint->relativeVelocity2, lane );
+					float cap = b2BlastFractureWorld_ComputeContactYieldImpulse(
+						world, contactSim, pointIndex, normal, anchorA, anchorB, relativeVelocity );
+					if ( pointIndex == 0 )
+					{
+						( (float*)&constraint->yieldImpulse1 )[lane] = cap;
+						( (float*)&constraint->normalImpulse1 )[lane] =
+							b2MinFloat( ( (float*)&constraint->normalImpulse1 )[lane], cap );
+						( (float*)&constraint->requiredNormalImpulse1 )[lane] = b2MaxFloat(
+							( (float*)&constraint->requiredNormalImpulse1 )[lane], ( (float*)&constraint->normalImpulse1 )[lane] );
+					}
+					else
+					{
+						( (float*)&constraint->yieldImpulse2 )[lane] = cap;
+						( (float*)&constraint->normalImpulse2 )[lane] =
+							b2MinFloat( ( (float*)&constraint->normalImpulse2 )[lane], cap );
+						( (float*)&constraint->requiredNormalImpulse2 )[lane] = b2MaxFloat(
+							( (float*)&constraint->requiredNormalImpulse2 )[lane], ( (float*)&constraint->normalImpulse2 )[lane] );
+					}
+				}
+			}
+		}
+	}
+}
+
 int b2GetContactConstraintSIMDByteCount( void )
 {
 	return sizeof( b2ContactConstraintWide );
@@ -2120,7 +2198,7 @@ void b2SolveContactsTask( int startIndex, int endIndex, b2StepContext* context, 
 			b2FloatW negImpulse = b2AddW( b2MulW( c->normalMass1, b2AddW( b2MulW( pointMassScale, vn ), bias ) ),
 										  b2MulW( pointImpulseScale, c->normalImpulse1 ) );
 
-			// Clamp the accumulated impulse. Breakable contacts cap the normal impulse at yieldImpulse.
+			// Clamp only if Blast2D reports that the current local graph can no longer support rigid contact.
 			b2FloatW requestedImpulse = b2MaxW( b2SubW( c->normalImpulse1, negImpulse ), b2ZeroW() );
 			b2FloatW newImpulse = b2MinW( requestedImpulse, c->yieldImpulse1 );
 			b2FloatW unresolvedImpulse = b2MaxW( b2SubW( requestedImpulse, newImpulse ), b2ZeroW() );
@@ -2177,7 +2255,7 @@ void b2SolveContactsTask( int startIndex, int endIndex, b2StepContext* context, 
 			b2FloatW negImpulse = b2AddW( b2MulW( c->normalMass2, b2AddW( b2MulW( pointMassScale, vn ), bias ) ),
 										  b2MulW( pointImpulseScale, c->normalImpulse2 ) );
 
-			// Clamp the accumulated impulse. Breakable contacts cap the normal impulse at yieldImpulse.
+			// Clamp only if Blast2D reports that the current local graph can no longer support rigid contact.
 			b2FloatW requestedImpulse = b2MaxW( b2SubW( c->normalImpulse2, negImpulse ), b2ZeroW() );
 			b2FloatW newImpulse = b2MinW( requestedImpulse, c->yieldImpulse2 );
 			b2FloatW unresolvedImpulse = b2MaxW( b2SubW( requestedImpulse, newImpulse ), b2ZeroW() );
@@ -2347,7 +2425,7 @@ void b2ApplyRestitutionTask( int startIndex, int endIndex, b2StepContext* contex
 			// Compute normal impulse
 			b2FloatW negImpulse = b2MulW( mass, b2AddW( vn, b2MulW( c->restitution, c->relativeVelocity1 ) ) );
 
-			// Clamp the accumulated impulse. Breakable contacts cap restitution too.
+			// Clamp restitution only when Blast2D reports reduced local contact support.
 			b2FloatW requestedImpulse = b2MaxW( b2SubW( c->normalImpulse1, negImpulse ), b2ZeroW() );
 			b2FloatW newImpulse = b2MinW( requestedImpulse, c->yieldImpulse1 );
 			b2FloatW unresolvedImpulse = b2MaxW( b2SubW( requestedImpulse, newImpulse ), b2ZeroW() );
@@ -2392,7 +2470,7 @@ void b2ApplyRestitutionTask( int startIndex, int endIndex, b2StepContext* contex
 			// Compute normal impulse
 			b2FloatW negImpulse = b2MulW( mass, b2AddW( vn, b2MulW( c->restitution, c->relativeVelocity2 ) ) );
 
-			// Clamp the accumulated impulse. Breakable contacts cap restitution too.
+			// Clamp restitution only when Blast2D reports reduced local contact support.
 			b2FloatW requestedImpulse = b2MaxW( b2SubW( c->normalImpulse2, negImpulse ), b2ZeroW() );
 			b2FloatW newImpulse = b2MinW( requestedImpulse, c->yieldImpulse2 );
 			b2FloatW unresolvedImpulse = b2MaxW( b2SubW( requestedImpulse, newImpulse ), b2ZeroW() );
