@@ -68,6 +68,10 @@ typedef struct b2BlastFractureWorld
 
 	uint32_t nextConstraintId;
 	uint32_t constraintRowCount;
+	uint32_t contactPairRowCount;
+	uint32_t contactImpactBudgetRowCount;
+	uint32_t contactLoadBudgetRowCount;
+	uint32_t contactYieldQueryCount;
 	uint32_t jointConstraintRowCount;
 	uint32_t actorTransitionCount;
 	uint32_t appliedForceLoadRowCount;
@@ -111,8 +115,12 @@ bool b2BlastFractureWorld_RecordBodyLinearImpulse(
 bool b2BlastFractureWorld_RecordIgnoredBodyTorque( b2World* world, b2Body* body );
 void b2BlastFractureWorld_ConsumePendingBodyInputsForCompatibility( b2World* world );
 void b2BlastFractureWorld_ConsumeTouchingContactsIfNoRows( b2World* world, float timeStep );
+float b2BlastFractureWorld_ComputeContactYieldImpulse( b2World* world, const b2ContactSim* contactSim, int pointIndex,
+														b2Vec2 normal, b2Vec2 anchorA, b2Vec2 anchorB, float normalVelocity );
 void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2ContactSim* contactSim, int pointIndex,
 														b2Vec2 normal, b2Vec2 anchorA, b2Vec2 anchorB, float normalImpulse,
-														float tangentImpulse, float unresolvedNormalImpulse, bool yielded, float timeStep );
+														float tangentImpulse, float requiredNormalImpulse, float yieldImpulse,
+														float normalVelocity, float normalMass, float unresolvedNormalImpulse,
+														bool yielded, bool persisted, float timeStep );
 void b2BlastFractureWorld_ConsumeJointConstraintRows( b2World* world, float timeStep );
 b2BlastFractureDebugSnapshot b2BlastFractureWorld_GetDebugSnapshot( const b2BlastFractureWorld* fractureWorld );

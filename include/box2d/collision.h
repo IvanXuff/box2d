@@ -884,24 +884,6 @@ typedef struct b2ManifoldPoint
 	bool yielded;
 } b2ManifoldPoint;
 
-#define B2_FRACTURE_SHAPE_CONTACT_DATA_MAGIC 0x41465243u
-#define B2_FRACTURE_SHAPE_DESTRUCTIBLE 0x00000001u
-
-typedef struct b2FractureShapeContactData
-{
-	uint32_t magic;
-	uint32_t flags;
-	int64_t rigidbodyId;
-	int64_t actorId;
-	b2BlastMaterialId materialId;
-	int32_t surfaceClusterId;
-	int32_t surfaceLeafId;
-	float yieldImpulse;
-	float contactCapacity;
-	float hardness;
-	float damageSoftening;
-} b2FractureShapeContactData;
-
 /// A contact manifold describes the contact points between colliding shapes.
 /// @note Box2D uses speculative collision so some contact points may be separated.
 typedef struct b2Manifold

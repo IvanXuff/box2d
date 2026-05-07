@@ -15,49 +15,6 @@
 #include <float.h>
 #include <stddef.h>
 
-static const b2FractureShapeContactData* b2GetFractureShapeContactData( const b2Shape* shape )
-{
-	if ( shape == NULL || shape->userData == NULL )
-	{
-		return NULL;
-	}
-
-	const b2FractureShapeContactData* data = (const b2FractureShapeContactData*)shape->userData;
-	return data->magic == B2_FRACTURE_SHAPE_CONTACT_DATA_MAGIC ? data : NULL;
-}
-
-static float b2GetFractureSideYieldImpulse( const b2FractureShapeContactData* data )
-{
-	if ( data == NULL || ( data->flags & B2_FRACTURE_SHAPE_DESTRUCTIBLE ) == 0 )
-	{
-		return FLT_MAX;
-	}
-
-	float cap = data->yieldImpulse > 0.0f ? data->yieldImpulse : data->contactCapacity;
-	return cap > 0.0f ? cap : FLT_MAX;
-}
-
-static float b2ComputeFractureContactYieldImpulse( b2World* world, const b2ContactSim* contactSim )
-{
-	if ( world == NULL || contactSim == NULL )
-	{
-		return FLT_MAX;
-	}
-
-	const b2Shape* shapeA = b2ShapeArray_Get( &world->shapes, contactSim->shapeIdA );
-	const b2Shape* shapeB = b2ShapeArray_Get( &world->shapes, contactSim->shapeIdB );
-	const b2FractureShapeContactData* dataA = b2GetFractureShapeContactData( shapeA );
-	const b2FractureShapeContactData* dataB = b2GetFractureShapeContactData( shapeB );
-	const bool breakableA = dataA != NULL && ( dataA->flags & B2_FRACTURE_SHAPE_DESTRUCTIBLE ) != 0;
-	const bool breakableB = dataB != NULL && ( dataB->flags & B2_FRACTURE_SHAPE_DESTRUCTIBLE ) != 0;
-	if ( breakableA == false && breakableB == false )
-	{
-		return FLT_MAX;
-	}
-
-	return b2MinFloat( b2GetFractureSideYieldImpulse( dataA ), b2GetFractureSideYieldImpulse( dataB ) );
-}
-
 static void b2RecordFractureYield( b2ContactConstraintPoint* cp, float requestedImpulse, float clampedImpulse )
 {
 	cp->requiredNormalImpulse = b2MaxFloat( cp->requiredNormalImpulse, requestedImpulse );
@@ -105,7 +62,6 @@ void b2PrepareOverflowContacts( b2StepContext* context )
 
 		const b2Manifold* manifold = &contactSim->manifold;
 		int pointCount = manifold->pointCount;
-		const float contactYieldImpulse = b2ComputeFractureContactYieldImpulse( world, contactSim );
 
 		B2_ASSERT( 0 < pointCount && pointCount <= 2 );
 
@@ -185,15 +141,6 @@ void b2PrepareOverflowContacts( b2StepContext* context )
 			const b2ManifoldPoint* mp = manifold->points + j;
 			b2ContactConstraintPoint* cp = constraint->points + j;
 
-			cp->yieldImpulse = contactYieldImpulse;
-			cp->normalImpulse = b2MinFloat( warmStartScale * mp->normalImpulse, cp->yieldImpulse );
-			cp->tangentImpulse = warmStartScale * mp->tangentImpulse;
-			cp->totalTangentImpulse = 0.0f;
-			cp->totalNormalImpulse = 0.0f;
-			cp->requiredNormalImpulse = cp->normalImpulse;
-			cp->unresolvedNormalImpulse = 0.0f;
-			cp->yielded = false;
-
 			b2Vec2 rA = mp->anchorA;
 			b2Vec2 rB = mp->anchorB;
 
@@ -215,6 +162,15 @@ void b2PrepareOverflowContacts( b2StepContext* context )
 			b2Vec2 vrA = b2Add( vA, b2CrossSV( wA, rA ) );
 			b2Vec2 vrB = b2Add( vB, b2CrossSV( wB, rB ) );
 			cp->relativeVelocity = b2Dot( normal, b2Sub( vrB, vrA ) );
+			cp->yieldImpulse =
+				b2BlastFractureWorld_ComputeContactYieldImpulse( world, contactSim, j, normal, rA, rB, cp->relativeVelocity );
+			cp->normalImpulse = b2MinFloat( warmStartScale * mp->normalImpulse, cp->yieldImpulse );
+			cp->tangentImpulse = warmStartScale * mp->tangentImpulse;
+			cp->totalTangentImpulse = 0.0f;
+			cp->totalNormalImpulse = 0.0f;
+			cp->requiredNormalImpulse = cp->normalImpulse;
+			cp->unresolvedNormalImpulse = 0.0f;
+			cp->yielded = false;
 		}
 	}
 
@@ -1207,13 +1163,23 @@ static void b2ExportBlastFractureWidePoint( b2StepContext* context, const b2Cont
 										  : b2ExtractFloatW( constraint->totalNormalImpulse2, lane );
 	float tangentImpulse = pointIndex == 0 ? b2ExtractFloatW( constraint->totalTangentImpulse1, lane )
 										   : b2ExtractFloatW( constraint->totalTangentImpulse2, lane );
+	float requiredImpulse = pointIndex == 0 ? b2ExtractFloatW( constraint->requiredNormalImpulse1, lane )
+											: b2ExtractFloatW( constraint->requiredNormalImpulse2, lane );
+	float yieldImpulse =
+		pointIndex == 0 ? b2ExtractFloatW( constraint->yieldImpulse1, lane ) : b2ExtractFloatW( constraint->yieldImpulse2, lane );
+	float normalVelocity = pointIndex == 0 ? b2ExtractFloatW( constraint->relativeVelocity1, lane )
+										   : b2ExtractFloatW( constraint->relativeVelocity2, lane );
+	float normalMass =
+		pointIndex == 0 ? b2ExtractFloatW( constraint->normalMass1, lane ) : b2ExtractFloatW( constraint->normalMass2, lane );
 	float unresolvedImpulse = pointIndex == 0 ? b2ExtractFloatW( constraint->unresolvedNormalImpulse1, lane )
 											  : b2ExtractFloatW( constraint->unresolvedNormalImpulse2, lane );
 	bool yielded =
 		( pointIndex == 0 ? b2ExtractFloatW( constraint->yielded1, lane ) : b2ExtractFloatW( constraint->yielded2, lane ) ) != 0.0f;
+	bool persisted = contactSim->manifold.points[pointIndex].persisted;
 
 	b2BlastFractureWorld_ConsumeContactConstraintRow(
-		context->world, contactSim, pointIndex, normal, anchorA, anchorB, normalImpulse, tangentImpulse, unresolvedImpulse, yielded, timeStep );
+		context->world, contactSim, pointIndex, normal, anchorA, anchorB, normalImpulse, tangentImpulse, requiredImpulse, yieldImpulse,
+		normalVelocity, normalMass, unresolvedImpulse, yielded, persisted, timeStep );
 }
 
 void b2ExportBlastFractureContactRows( b2StepContext* context, float timeStep )
@@ -1233,7 +1199,9 @@ void b2ExportBlastFractureContactRows( b2StepContext* context, float timeStep )
 		{
 			const b2ContactConstraintPoint* point = constraint->points + pointIndex;
 			b2BlastFractureWorld_ConsumeContactConstraintRow( context->world, contactSim, pointIndex, constraint->normal, point->anchorA,
-				point->anchorB, point->totalNormalImpulse, point->totalTangentImpulse, point->unresolvedNormalImpulse, point->yielded, timeStep );
+				point->anchorB, point->totalNormalImpulse, point->totalTangentImpulse, point->requiredNormalImpulse, point->yieldImpulse,
+				point->relativeVelocity, point->normalMass, point->unresolvedNormalImpulse, point->yielded,
+				contactSim->manifold.points[pointIndex].persisted, timeStep );
 		}
 	}
 
@@ -1759,7 +1727,6 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 			if ( contactSim != NULL )
 			{
 				const b2Manifold* manifold = &contactSim->manifold;
-				const float contactYieldImpulse = b2ComputeFractureContactYieldImpulse( world, contactSim );
 
 				int indexA = contactSim->bodySimIndexA;
 				int indexB = contactSim->bodySimIndexB;
@@ -1859,12 +1826,9 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 
 					( (float*)&constraint->baseSeparation1 )[j] = mp->separation - b2Dot( b2Sub( rB, rA ), normal );
 
-					( (float*)&constraint->yieldImpulse1 )[j] = contactYieldImpulse;
-					( (float*)&constraint->normalImpulse1 )[j] = b2MinFloat( warmStartScale * mp->normalImpulse, contactYieldImpulse );
 					( (float*)&constraint->tangentImpulse1 )[j] = warmStartScale * mp->tangentImpulse;
 					( (float*)&constraint->totalTangentImpulse1 )[j] = 0.0f;
 					( (float*)&constraint->totalNormalImpulse1 )[j] = 0.0f;
-					( (float*)&constraint->requiredNormalImpulse1 )[j] = ( (float*)&constraint->normalImpulse1 )[j];
 					( (float*)&constraint->unresolvedNormalImpulse1 )[j] = 0.0f;
 					( (float*)&constraint->yielded1 )[j] = 0.0f;
 
@@ -1881,7 +1845,13 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 					// relative velocity for restitution
 					b2Vec2 vrA = b2Add( vA, b2CrossSV( wA, rA ) );
 					b2Vec2 vrB = b2Add( vB, b2CrossSV( wB, rB ) );
-					( (float*)&constraint->relativeVelocity1 )[j] = b2Dot( normal, b2Sub( vrB, vrA ) );
+					float relativeVelocity = b2Dot( normal, b2Sub( vrB, vrA ) );
+					float contactYieldImpulse =
+						b2BlastFractureWorld_ComputeContactYieldImpulse( world, contactSim, 0, normal, rA, rB, relativeVelocity );
+					( (float*)&constraint->yieldImpulse1 )[j] = contactYieldImpulse;
+					( (float*)&constraint->normalImpulse1 )[j] = b2MinFloat( warmStartScale * mp->normalImpulse, contactYieldImpulse );
+					( (float*)&constraint->requiredNormalImpulse1 )[j] = ( (float*)&constraint->normalImpulse1 )[j];
+					( (float*)&constraint->relativeVelocity1 )[j] = relativeVelocity;
 				}
 
 				int pointCount = manifold->pointCount;
@@ -1901,12 +1871,9 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 
 					( (float*)&constraint->baseSeparation2 )[j] = mp->separation - b2Dot( b2Sub( rB, rA ), normal );
 
-					( (float*)&constraint->yieldImpulse2 )[j] = contactYieldImpulse;
-					( (float*)&constraint->normalImpulse2 )[j] = b2MinFloat( warmStartScale * mp->normalImpulse, contactYieldImpulse );
 					( (float*)&constraint->tangentImpulse2 )[j] = warmStartScale * mp->tangentImpulse;
 					( (float*)&constraint->totalTangentImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->totalNormalImpulse2 )[j] = 0.0f;
-					( (float*)&constraint->requiredNormalImpulse2 )[j] = ( (float*)&constraint->normalImpulse2 )[j];
 					( (float*)&constraint->unresolvedNormalImpulse2 )[j] = 0.0f;
 					( (float*)&constraint->yielded2 )[j] = 0.0f;
 
@@ -1923,7 +1890,13 @@ void b2PrepareContactsTask( int startIndex, int endIndex, b2StepContext* context
 					// relative velocity for restitution
 					b2Vec2 vrA = b2Add( vA, b2CrossSV( wA, rA ) );
 					b2Vec2 vrB = b2Add( vB, b2CrossSV( wB, rB ) );
-					( (float*)&constraint->relativeVelocity2 )[j] = b2Dot( normal, b2Sub( vrB, vrA ) );
+					float relativeVelocity = b2Dot( normal, b2Sub( vrB, vrA ) );
+					float contactYieldImpulse =
+						b2BlastFractureWorld_ComputeContactYieldImpulse( world, contactSim, 1, normal, rA, rB, relativeVelocity );
+					( (float*)&constraint->yieldImpulse2 )[j] = contactYieldImpulse;
+					( (float*)&constraint->normalImpulse2 )[j] = b2MinFloat( warmStartScale * mp->normalImpulse, contactYieldImpulse );
+					( (float*)&constraint->requiredNormalImpulse2 )[j] = ( (float*)&constraint->normalImpulse2 )[j];
+					( (float*)&constraint->relativeVelocity2 )[j] = relativeVelocity;
 				}
 				else
 				{

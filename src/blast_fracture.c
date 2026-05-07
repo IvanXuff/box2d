@@ -3095,6 +3095,10 @@ void b2BlastFractureWorld_ClearStep( b2BlastFractureWorld* fractureWorld )
 	b2BlastFractureWorld_KeepCommittedTransitionJournal( fractureWorld );
 	fractureWorld->commandCount = 0;
 	fractureWorld->constraintRowCount = 0;
+	fractureWorld->contactPairRowCount = 0;
+	fractureWorld->contactImpactBudgetRowCount = 0;
+	fractureWorld->contactLoadBudgetRowCount = 0;
+	fractureWorld->contactYieldQueryCount = 0;
 	fractureWorld->jointConstraintRowCount = 0;
 	fractureWorld->actorTransitionCount = 0;
 	fractureWorld->appliedForceLoadRowCount = 0;
@@ -3291,6 +3295,220 @@ static int b2BlastFindEndpointLeaf( b2BlastFractureWorld* fractureWorld, const b
 		fractureWorld->ignoredOffTargetEventCount += 1;
 	}
 	return B2_NULL_INDEX;
+}
+
+typedef struct b2BlastFractureContactSide
+{
+	b2BlastActor* actor;
+	const b2Shape* shape;
+	b2Vec2 localPoint;
+	int leafIndex;
+	b2BlastMaterialId materialId;
+	float capacity;
+	float hardness;
+	float damageSoftening;
+	bool destructible;
+} b2BlastFractureContactSide;
+
+typedef struct b2BlastFractureContactPair
+{
+	b2BlastFractureContactSide sides[2];
+	float yieldImpulse;
+	float damageShare[2];
+	bool hasDestructibleSide;
+} b2BlastFractureContactPair;
+
+static float b2BlastSaturate( float value )
+{
+	return b2ClampFloat( value, 0.0f, 1.0f );
+}
+
+static float b2BlastContactSideCapacity(
+	const b2BlastActor* actor, int leafIndex, float normalVelocity, float* outHardness, float* outDamageSoftening )
+{
+	if ( outHardness != NULL )
+	{
+		*outHardness = 1.0f;
+	}
+	if ( outDamageSoftening != NULL )
+	{
+		*outDamageSoftening = 0.0f;
+	}
+	if ( actor == NULL || leafIndex == B2_NULL_INDEX || leafIndex < 0 || leafIndex >= actor->leafCount )
+	{
+		return FLT_MAX;
+	}
+
+	const b2BlastLeaf* leaf = actor->leaves + leafIndex;
+	const b2BlastMaterialPhysics* material = b2BlastFindMaterial( &actor->ownedAsset, leaf->dominantMaterialId );
+	const float compressStrength = material != NULL ? b2MaxFloat( material->compressStrength, material->contactCapacity ) : 64.0f;
+	const float shearStrength = material != NULL ? b2MaxFloat( material->shearStrength, 0.0f ) : compressStrength;
+	const float tensileStrength = material != NULL ? b2MaxFloat( material->tensileStrength, 0.0f ) : shearStrength;
+	const float hardness = material != NULL ? b2MaxFloat( material->hardness, 0.05f ) : 1.0f;
+	const float toughness = material != NULL ? b2MaxFloat( material->toughness, 0.05f ) : 1.0f;
+	const float strength = b2MaxFloat( 0.05f, b2MinFloat( compressStrength, b2MaxFloat( shearStrength, tensileStrength ) ) );
+	const float leafArea = b2MaxFloat( 1.0f, (float)leaf->cellCount );
+	const float patchArea = b2MaxFloat( 1.0f, 0.5f * sqrtf( leafArea ) );
+	float materialCapacity = strength * ( 2.0f + 0.75f * patchArea ) * ( 0.75f + 0.25f * toughness );
+
+	float weakestBond = FLT_MAX;
+	float bondSum = 0.0f;
+	float damageSum = 0.0f;
+	int bondCount = 0;
+	for ( int i = 0; i < actor->bondCount; ++i )
+	{
+		const b2BlastActiveBond* bond = actor->bonds + i;
+		if ( ( bond->flags & b2_blastBondFlagBroken ) != 0 )
+		{
+			continue;
+		}
+		if ( (int)bond->leafA != leafIndex && (int)bond->leafB != leafIndex )
+		{
+			continue;
+		}
+		const float remaining = b2MaxFloat( 0.0f, bond->capacity * ( 1.0f - b2ClampFloat( bond->damage, 0.0f, 0.95f ) ) );
+		weakestBond = b2MinFloat( weakestBond, remaining );
+		bondSum += remaining;
+		damageSum += b2ClampFloat( bond->damage, 0.0f, 1.0f );
+		bondCount += 1;
+	}
+
+	float capacity = materialCapacity;
+	float averageDamage = 0.0f;
+	if ( bondCount > 0 )
+	{
+		const float localBondCapacity = 0.65f * weakestBond + 0.35f * ( bondSum / (float)bondCount );
+		capacity = b2MinFloat( materialCapacity, b2MaxFloat( 0.25f, localBondCapacity ) );
+		averageDamage = damageSum / (float)bondCount;
+	}
+
+	const float damageSoftening = 1.0f - 0.70f * b2ClampFloat( averageDamage, 0.0f, 0.95f );
+	const float approachSpeed = b2MaxFloat( 0.0f, -normalVelocity );
+	const float rateHardening = 1.0f + 0.08f * log1pf( approachSpeed );
+	capacity = b2MaxFloat( 0.05f, capacity * damageSoftening * rateHardening );
+
+	if ( outHardness != NULL )
+	{
+		*outHardness = hardness;
+	}
+	if ( outDamageSoftening != NULL )
+	{
+		*outDamageSoftening = 1.0f - damageSoftening;
+	}
+	return capacity;
+}
+
+static void b2BlastBuildContactSide( b2World* world, b2BlastFractureWorld* fractureWorld, const b2Shape* shape, b2Body* body,
+									 b2Vec2 worldPoint, float normalVelocity, b2BlastFractureContactSide* side )
+{
+	*side = (b2BlastFractureContactSide){ 0 };
+	side->shape = shape;
+	side->leafIndex = B2_NULL_INDEX;
+	side->capacity = FLT_MAX;
+	side->hardness = 1.0f;
+
+	if ( fractureWorld == NULL || shape == NULL || body == NULL )
+	{
+		return;
+	}
+
+	b2BlastActor* actor = b2BlastGetActor( fractureWorld, shape->blastActorId );
+	if ( actor == NULL || shape->type != b2_pixelShape )
+	{
+		return;
+	}
+
+	b2Transform transform = b2GetBodyTransformQuick( world, body );
+	b2Vec2 localPoint = b2InvTransformPoint( transform, worldPoint );
+	int leaf = b2BlastFindEndpointLeaf( fractureWorld, actor, shape, localPoint, true );
+	if ( leaf == B2_NULL_INDEX )
+	{
+		return;
+	}
+
+	side->actor = actor;
+	side->localPoint = localPoint;
+	side->leafIndex = leaf;
+	side->materialId = actor->leaves[leaf].dominantMaterialId;
+	side->capacity = b2BlastContactSideCapacity( actor, leaf, normalVelocity, &side->hardness, &side->damageSoftening );
+	side->destructible = true;
+}
+
+static bool b2BlastBuildContactPair( b2World* world, const b2ContactSim* contactSim, b2Vec2 anchorA, b2Vec2 anchorB,
+									 float normalVelocity, b2BlastFractureContactPair* pair )
+{
+	if ( pair == NULL )
+	{
+		return false;
+	}
+	*pair = (b2BlastFractureContactPair){ 0 };
+	pair->yieldImpulse = FLT_MAX;
+	pair->damageShare[0] = 0.0f;
+	pair->damageShare[1] = 0.0f;
+	if ( world == NULL || contactSim == NULL )
+	{
+		return false;
+	}
+
+	b2Shape* shapeA = b2ShapeArray_Get( &world->shapes, contactSim->shapeIdA );
+	b2Shape* shapeB = b2ShapeArray_Get( &world->shapes, contactSim->shapeIdB );
+	b2Body* bodyA = b2BodyArray_Get( &world->bodies, shapeA->bodyId );
+	b2Body* bodyB = b2BodyArray_Get( &world->bodies, shapeB->bodyId );
+	if ( shapeA == NULL || shapeB == NULL || bodyA == NULL || bodyB == NULL )
+	{
+		return false;
+	}
+
+	b2Transform transformA = b2GetBodyTransformQuick( world, bodyA );
+	b2Transform transformB = b2GetBodyTransformQuick( world, bodyB );
+	b2Vec2 worldPointA = b2Add( transformA.p, anchorA );
+	b2Vec2 worldPointB = b2Add( transformB.p, anchorB );
+	b2Vec2 worldPoint = b2MulSV( 0.5f, b2Add( worldPointA, worldPointB ) );
+
+	b2BlastBuildContactSide( world, &world->blastFractureWorld, shapeA, bodyA, worldPoint, normalVelocity, pair->sides + 0 );
+	b2BlastBuildContactSide( world, &world->blastFractureWorld, shapeB, bodyB, worldPoint, normalVelocity, pair->sides + 1 );
+	pair->hasDestructibleSide = pair->sides[0].destructible || pair->sides[1].destructible;
+	if ( pair->hasDestructibleSide == false )
+	{
+		return false;
+	}
+
+	if ( pair->sides[0].destructible )
+	{
+		pair->yieldImpulse = b2MinFloat( pair->yieldImpulse, pair->sides[0].capacity );
+	}
+	if ( pair->sides[1].destructible )
+	{
+		pair->yieldImpulse = b2MinFloat( pair->yieldImpulse, pair->sides[1].capacity );
+	}
+	if ( pair->yieldImpulse <= 0.0f || pair->yieldImpulse == FLT_MAX )
+	{
+		pair->yieldImpulse = FLT_MAX;
+	}
+
+	float vulnerabilityA = pair->sides[0].destructible ? 1.0f / b2MaxFloat( pair->sides[0].capacity, 0.05f ) : 0.0f;
+	float vulnerabilityB = pair->sides[1].destructible ? 1.0f / b2MaxFloat( pair->sides[1].capacity, 0.05f ) : 0.0f;
+	float vulnerabilitySum = vulnerabilityA + vulnerabilityB;
+	if ( vulnerabilitySum > 0.0f )
+	{
+		pair->damageShare[0] = vulnerabilityA / vulnerabilitySum;
+		pair->damageShare[1] = vulnerabilityB / vulnerabilitySum;
+	}
+	return true;
+}
+
+float b2BlastFractureWorld_ComputeContactYieldImpulse( b2World* world, const b2ContactSim* contactSim, int pointIndex,
+														b2Vec2 normal, b2Vec2 anchorA, b2Vec2 anchorB, float normalVelocity )
+{
+	B2_UNUSED( pointIndex );
+	B2_UNUSED( normal );
+	b2BlastFractureContactPair pair;
+	if ( b2BlastBuildContactPair( world, contactSim, anchorA, anchorB, normalVelocity, &pair ) == false )
+	{
+		return FLT_MAX;
+	}
+	world->blastFractureWorld.contactYieldQueryCount += 1;
+	return pair.yieldImpulse;
 }
 
 static float b2BlastBondGraphCost( const b2BlastActor* actor, const b2BlastActiveBond* bond )
@@ -3545,6 +3763,69 @@ static void b2BlastApplyLoadPathFromLeaf( b2BlastFractureWorld* fractureWorld, b
 
 		int next = (int)bond->leafA == current ? (int)bond->leafB : (int)bond->leafA;
 		current = next;
+	}
+}
+
+static void b2BlastApplyLocalContactLoadFromLeaf(
+	b2BlastFractureWorld* fractureWorld, b2BlastActor* actor, int leafIndex, float force, b2Vec2 direction )
+{
+	if ( actor == NULL || leafIndex == B2_NULL_INDEX || force <= 0.0f )
+	{
+		return;
+	}
+	if ( b2BlastComputeGraphDistances( actor, leafIndex ) == false )
+	{
+		fractureWorld->stepAllocationFallbackCount += 1;
+		return;
+	}
+
+	b2Vec2 source = actor->leaves[leafIndex].centroid;
+	for ( int i = 0; i < actor->bondCount; ++i )
+	{
+		b2BlastActiveBond* bond = actor->bonds + i;
+		if ( ( bond->flags & b2_blastBondFlagBroken ) != 0 )
+		{
+			continue;
+		}
+		if ( ( actor->leaves[bond->leafA].flags & b2_blastLeafFlagDetached ) != 0 ||
+			 ( actor->leaves[bond->leafB].flags & b2_blastLeafFlagDetached ) != 0 )
+		{
+			continue;
+		}
+		float da = actor->graphDistanceScratch[bond->leafA];
+		float db = actor->graphDistanceScratch[bond->leafB];
+		if ( da == FLT_MAX && db == FLT_MAX )
+		{
+			continue;
+		}
+		float distance = da == FLT_MAX ? db : ( db == FLT_MAX ? da : 0.5f * ( da + db ) );
+		b2Vec2 a = actor->leaves[bond->leafA].centroid;
+		b2Vec2 b = actor->leaves[bond->leafB].centroid;
+		float align = b2BlastDirectionAlignment( direction, source, a, b, false );
+		float section = 1.0f + 1.2f / b2MaxFloat( 1.0f, bond->area );
+		float capacityWeight = 1.0f / ( 1.0f + 0.035f * sqrtf( b2MaxFloat( 1.0f, bond->capacity ) ) );
+		float decay = expf( -0.72f * distance );
+		float demand = force * align * section * capacityWeight * decay;
+		bond->loadDemand += demand;
+		fractureWorld->maxLoadDemand = b2MaxFloat( fractureWorld->maxLoadDemand, bond->loadDemand );
+	}
+}
+
+static void b2BlastApplyLoadBudgetFromLeaf(
+	b2BlastFractureWorld* fractureWorld, b2BlastActor* actor, int leafIndex, float force, b2Vec2 direction )
+{
+	if ( fractureWorld == NULL || actor == NULL || leafIndex == B2_NULL_INDEX || force <= 0.0f )
+	{
+		return;
+	}
+	const float beforeMaxLoadDemand = fractureWorld->maxLoadDemand;
+	if ( ( actor->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
+	{
+		b2BlastApplyLoadPathFromLeaf( fractureWorld, actor, leafIndex, force, direction );
+	}
+	if ( fractureWorld->maxLoadDemand <= beforeMaxLoadDemand + 0.000001f )
+	{
+		b2BlastApplyLocalContactLoadFromLeaf( fractureWorld, actor, leafIndex, force, direction );
 	}
 }
 
@@ -3832,25 +4113,41 @@ static void b2BlastRunDamageShader( b2BlastFractureWorld* fractureWorld, b2Blast
 	}
 }
 
-static bool b2BlastShapeDisablesFracture( const b2Shape* shape )
+static float b2BlastContactImpactWeight( float normalImpulse, float tangentImpulse, float requiredNormalImpulse, float yieldImpulse,
+										 float normalVelocity, float unresolvedNormalImpulse, bool yielded, bool persisted )
 {
-	return shape != NULL && shape->type == b2_pixelShape &&
-		   ( shape->pixel.flags & b2_pixelShapeFlagDisableBlastFracture ) != 0;
+	const float required = b2MaxFloat( requiredNormalImpulse, normalImpulse + unresolvedNormalImpulse );
+	const float yieldWeight =
+		( yielded || unresolvedNormalImpulse > 0.0001f ) ? b2BlastSaturate( unresolvedNormalImpulse / b2MaxFloat( required, 0.0001f ) ) : 0.0f;
+	const float approachSpeed = b2MaxFloat( 0.0f, -normalVelocity );
+	const float speedWeight = b2BlastSaturate( ( approachSpeed - 4.0f ) / 36.0f );
+	const float ageWeight = persisted ? 0.22f : 1.0f;
+	float impulseReference = yieldImpulse > 0.0f && yieldImpulse < FLT_MAX ? yieldImpulse : 64.0f;
+	const float impulseWeight = b2BlastSaturate( ( normalImpulse + 0.5f * fabsf( tangentImpulse ) ) / b2MaxFloat( impulseReference, 0.0001f ) );
+	return b2MaxFloat( yieldWeight, speedWeight * ageWeight * impulseWeight );
+}
+
+static void b2BlastApplyContactSideBudget( b2BlastFractureWorld* fractureWorld, const b2BlastFractureContactSide* side,
+										   float impactImpulse, float loadForce, b2Vec2 direction )
+{
+	if ( fractureWorld == NULL || side == NULL || side->destructible == false || side->actor == NULL || side->leafIndex == B2_NULL_INDEX )
+	{
+		return;
+	}
+	if ( impactImpulse > 0.0001f )
+	{
+		b2BlastApplyImpactWaveFromLeafAtPoint(
+			fractureWorld, side->actor, side->leafIndex, side->localPoint, impactImpulse, direction );
+	}
+	if ( loadForce > 0.0001f )
+	{
+		b2BlastApplyLoadBudgetFromLeaf( fractureWorld, side->actor, side->leafIndex, loadForce, direction );
+	}
 }
 
 static void b2BlastConsumeContact( b2World* world, b2Contact* contact, float timeStep )
 {
-	if ( contact == NULL )
-	{
-		return;
-	}
-
-	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
-	b2Shape* shapeA = b2ShapeArray_Get( &world->shapes, contact->shapeIdA );
-	b2Shape* shapeB = b2ShapeArray_Get( &world->shapes, contact->shapeIdB );
-	b2BlastActor* actorA = b2BlastGetActor( fractureWorld, shapeA->blastActorId );
-	b2BlastActor* actorB = b2BlastGetActor( fractureWorld, shapeB->blastActorId );
-	if ( actorA == NULL && actorB == NULL )
+	if ( world == NULL || contact == NULL )
 	{
 		return;
 	}
@@ -3861,75 +4158,28 @@ static void b2BlastConsumeContact( b2World* world, b2Contact* contact, float tim
 		return;
 	}
 
-	b2Body* bodyA = b2BodyArray_Get( &world->bodies, contact->edges[0].bodyId );
-	b2Body* bodyB = b2BodyArray_Get( &world->bodies, contact->edges[1].bodyId );
-	b2Transform transformA = b2GetBodyTransformQuick( world, bodyA );
-	b2Transform transformB = b2GetBodyTransformQuick( world, bodyB );
-	float invDt = timeStep > 0.0f ? 1.0f / timeStep : 0.0f;
-
 	for ( int pointIndex = 0; pointIndex < sim->manifold.pointCount; ++pointIndex )
 	{
 		const b2ManifoldPoint* point = sim->manifold.points + pointIndex;
 		float normalImpulse = b2MaxFloat( point->totalNormalImpulse, point->normalImpulse );
 		float tangentImpulse = point->totalTangentImpulse;
-		if ( normalImpulse <= 0.0001f && fabsf( tangentImpulse ) <= 0.0001f && point->yielded == false )
+		if ( normalImpulse <= 0.0001f && fabsf( tangentImpulse ) <= 0.0001f &&
+			 ( point->yielded == false || point->unresolvedNormalImpulse <= 0.0001f ) )
 		{
 			continue;
 		}
 
-		fractureWorld->constraintRowCount += 1;
-		b2Vec2 worldPointA = b2Add( transformA.p, point->anchorA );
-		b2Vec2 worldPointB = b2Add( transformB.p, point->anchorB );
-		b2Vec2 worldPoint = b2MulSV( 0.5f, b2Add( worldPointA, worldPointB ) );
-		b2Vec2 tangent = b2RightPerp( sim->manifold.normal );
-		bool shapeADisablesFracture = b2BlastShapeDisablesFracture( shapeA );
-		bool shapeBDisablesFracture = b2BlastShapeDisablesFracture( shapeB );
-		float contactImpulse = normalImpulse + fabsf( tangentImpulse );
-
-		if ( actorA != NULL )
-		{
-			b2Vec2 local = b2InvTransformPoint( transformA, worldPoint );
-			int leaf = b2BlastFindEndpointLeaf( fractureWorld, actorA, shapeA, local, true );
-			if ( shapeBDisablesFracture && contactImpulse > 0.0001f )
-			{
-				b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorA, leaf, contactImpulse, sim->manifold.normal );
-			}
-			else if ( point->yielded && point->unresolvedNormalImpulse > 0.0001f )
-			{
-				b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorA, leaf, point->unresolvedNormalImpulse, sim->manifold.normal );
-			}
-			if ( shapeBDisablesFracture == false && ( actorA->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
-			{
-				float force = ( normalImpulse + fabsf( tangentImpulse ) ) * invDt;
-				b2BlastApplyLoadPathFromLeaf( fractureWorld, actorA, leaf, force, b2Add( sim->manifold.normal, tangent ) );
-			}
-		}
-
-		if ( actorB != NULL )
-		{
-			b2Vec2 local = b2InvTransformPoint( transformB, worldPoint );
-			int leaf = b2BlastFindEndpointLeaf( fractureWorld, actorB, shapeB, local, true );
-			b2Vec2 reverseNormal = b2Neg( sim->manifold.normal );
-			if ( shapeADisablesFracture && contactImpulse > 0.0001f )
-			{
-				b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorB, leaf, contactImpulse, reverseNormal );
-			}
-			else if ( point->yielded && point->unresolvedNormalImpulse > 0.0001f )
-			{
-				b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorB, leaf, point->unresolvedNormalImpulse, reverseNormal );
-			}
-			if ( shapeADisablesFracture == false && ( actorB->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
-			{
-				float force = ( normalImpulse + fabsf( tangentImpulse ) ) * invDt;
-				b2BlastApplyLoadPathFromLeaf( fractureWorld, actorB, leaf, force, b2Sub( tangent, sim->manifold.normal ) );
-			}
-		}
+		b2BlastFractureWorld_ConsumeContactConstraintRow( world, sim, pointIndex, sim->manifold.normal, point->anchorA, point->anchorB,
+			normalImpulse, tangentImpulse, point->requiredNormalImpulse, point->yieldImpulse, point->normalVelocity, point->normalMass,
+			point->unresolvedNormalImpulse, point->yielded, point->persisted, timeStep );
 	}
 }
 
 void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2ContactSim* contactSim, int pointIndex,
 														b2Vec2 normal, b2Vec2 anchorA, b2Vec2 anchorB, float normalImpulse,
-														float tangentImpulse, float unresolvedNormalImpulse, bool yielded, float timeStep )
+														float tangentImpulse, float requiredNormalImpulse, float yieldImpulse,
+														float normalVelocity, float normalMass, float unresolvedNormalImpulse,
+														bool yielded, bool persisted, float timeStep )
 {
 	if ( world == NULL || contactSim == NULL || pointIndex < 0 || pointIndex >= contactSim->manifold.pointCount )
 	{
@@ -3937,11 +4187,8 @@ void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2C
 	}
 
 	b2BlastFractureWorld* fractureWorld = &world->blastFractureWorld;
-	b2Shape* shapeA = b2ShapeArray_Get( &world->shapes, contactSim->shapeIdA );
-	b2Shape* shapeB = b2ShapeArray_Get( &world->shapes, contactSim->shapeIdB );
-	b2BlastActor* actorA = b2BlastGetActor( fractureWorld, shapeA->blastActorId );
-	b2BlastActor* actorB = b2BlastGetActor( fractureWorld, shapeB->blastActorId );
-	if ( actorA == NULL && actorB == NULL )
+	b2BlastFractureContactPair pair;
+	if ( b2BlastBuildContactPair( world, contactSim, anchorA, anchorB, normalVelocity, &pair ) == false )
 	{
 		return;
 	}
@@ -3953,56 +4200,32 @@ void b2BlastFractureWorld_ConsumeContactConstraintRow( b2World* world, const b2C
 	}
 
 	fractureWorld->constraintRowCount += 1;
-	b2Body* bodyA = b2BodyArray_Get( &world->bodies, shapeA->bodyId );
-	b2Body* bodyB = b2BodyArray_Get( &world->bodies, shapeB->bodyId );
-	b2Transform transformA = b2GetBodyTransformQuick( world, bodyA );
-	b2Transform transformB = b2GetBodyTransformQuick( world, bodyB );
-	b2Vec2 worldPointA = b2Add( transformA.p, anchorA );
-	b2Vec2 worldPointB = b2Add( transformB.p, anchorB );
-	b2Vec2 worldPoint = b2MulSV( 0.5f, b2Add( worldPointA, worldPointB ) );
+	fractureWorld->contactPairRowCount += 1;
 	b2Vec2 tangent = b2RightPerp( normal );
-	bool shapeADisablesFracture = b2BlastShapeDisablesFracture( shapeA );
-	bool shapeBDisablesFracture = b2BlastShapeDisablesFracture( shapeB );
 	float contactImpulse = normalImpulse + fabsf( tangentImpulse );
+	B2_UNUSED( normalMass );
 
-	if ( actorA != NULL )
+	const float impactWeight = b2BlastContactImpactWeight(
+		normalImpulse, tangentImpulse, requiredNormalImpulse, yieldImpulse, normalVelocity, unresolvedNormalImpulse, yielded, persisted );
+	const float impactImpulse = unresolvedNormalImpulse + b2MaxFloat( 0.0f, contactImpulse - unresolvedNormalImpulse ) * impactWeight;
+	const float loadForce = contactImpulse * ( 1.0f - impactWeight ) * invDt;
+	if ( impactImpulse > 0.0001f )
 	{
-		b2Vec2 local = b2InvTransformPoint( transformA, worldPoint );
-		int leaf = b2BlastFindEndpointLeaf( fractureWorld, actorA, shapeA, local, true );
-		if ( shapeBDisablesFracture && contactImpulse > 0.0001f )
-		{
-			b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorA, leaf, contactImpulse, normal );
-		}
-		else if ( yielded && unresolvedNormalImpulse > 0.0001f )
-		{
-			b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorA, leaf, unresolvedNormalImpulse, normal );
-		}
-		if ( shapeBDisablesFracture == false && ( actorA->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
-		{
-			float force = ( normalImpulse + fabsf( tangentImpulse ) ) * invDt;
-			b2BlastApplyLoadPathFromLeaf( fractureWorld, actorA, leaf, force, b2Add( normal, tangent ) );
-		}
+		fractureWorld->contactImpactBudgetRowCount += 1;
 	}
-
-	if ( actorB != NULL )
+	if ( loadForce > 0.0001f )
 	{
-		b2Vec2 local = b2InvTransformPoint( transformB, worldPoint );
-		int leaf = b2BlastFindEndpointLeaf( fractureWorld, actorB, shapeB, local, true );
-		b2Vec2 reverseNormal = b2Neg( normal );
-		if ( shapeADisablesFracture && contactImpulse > 0.0001f )
-		{
-			b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorB, leaf, contactImpulse, reverseNormal );
-		}
-		else if ( yielded && unresolvedNormalImpulse > 0.0001f )
-		{
-			b2BlastApplyImpactWaveFromLeaf( fractureWorld, actorB, leaf, unresolvedNormalImpulse, reverseNormal );
-		}
-		if ( shapeADisablesFracture == false && ( actorB->flags & b2_blastActorFlagOwnsWorldAnchor ) != 0 )
-		{
-			float force = ( normalImpulse + fabsf( tangentImpulse ) ) * invDt;
-			b2BlastApplyLoadPathFromLeaf( fractureWorld, actorB, leaf, force, b2Sub( tangent, normal ) );
-		}
+		fractureWorld->contactLoadBudgetRowCount += 1;
 	}
+	b2Vec2 contactVector = b2Add( b2MulSV( normalImpulse, normal ), b2MulSV( tangentImpulse, tangent ) );
+	if ( b2LengthSquared( contactVector ) <= 0.000001f )
+	{
+		contactVector = normal;
+	}
+	b2BlastApplyContactSideBudget( fractureWorld, pair.sides + 0, impactImpulse * pair.damageShare[0],
+		loadForce * pair.damageShare[0], b2Neg( contactVector ) );
+	b2BlastApplyContactSideBudget( fractureWorld, pair.sides + 1, impactImpulse * pair.damageShare[1],
+		loadForce * pair.damageShare[1], contactVector );
 }
 
 static b2BlastActor* b2BlastFindFirstBodyActorForConstraintRow( b2World* world, b2Body* body, b2Shape** outShape )
@@ -4066,7 +4289,7 @@ static void b2BlastConsumeJointEndpointLoad( b2World* world, b2Body* body, b2Sha
 	{
 		return;
 	}
-	b2BlastApplyLoadPathFromLeaf( &world->blastFractureWorld, actor, leaf, b2Length( force ), force );
+	b2BlastApplyLoadBudgetFromLeaf( &world->blastFractureWorld, actor, leaf, b2Length( force ), force );
 }
 
 static bool b2BlastRecordBodyInput(
@@ -4145,7 +4368,7 @@ static bool b2BlastConsumeBodyInputRecord( b2World* world, const b2BlastBodyInpu
 		worldPoint = bodySim->center;
 	}
 	b2Vec2 localPoint = b2InvTransformPoint( transform, worldPoint );
-	int leaf = b2BlastFindEndpointLeaf( &world->blastFractureWorld, actor, shape, localPoint, true );
+	int leaf = b2BlastFindEndpointLeaf( &world->blastFractureWorld, actor, shape, localPoint, false );
 	if ( leaf == B2_NULL_INDEX )
 	{
 		world->blastFractureWorld.ignoredOffTargetEventCount += 1;
@@ -4162,7 +4385,7 @@ static bool b2BlastConsumeBodyInputRecord( b2World* world, const b2BlastBodyInpu
 	else
 	{
 		fractureWorld->appliedForceLoadRowCount += 1;
-		b2BlastApplyLoadPathFromLeaf( fractureWorld, actor, leaf, b2Length( record->vector ), record->vector );
+		b2BlastApplyLoadBudgetFromLeaf( fractureWorld, actor, leaf, b2Length( record->vector ), record->vector );
 	}
 	return true;
 }
@@ -5368,6 +5591,10 @@ b2BlastFractureDebugSnapshot b2BlastFractureWorld_GetDebugSnapshot( const b2Blas
 
 	snapshot.commandCount = (uint32_t)fractureWorld->commandCount;
 	snapshot.constraintRowCount = fractureWorld->constraintRowCount;
+	snapshot.contactPairRowCount = fractureWorld->contactPairRowCount;
+	snapshot.contactImpactBudgetRowCount = fractureWorld->contactImpactBudgetRowCount;
+	snapshot.contactLoadBudgetRowCount = fractureWorld->contactLoadBudgetRowCount;
+	snapshot.contactYieldQueryCount = fractureWorld->contactYieldQueryCount;
 	snapshot.jointConstraintRowCount = fractureWorld->jointConstraintRowCount;
 	snapshot.actorTransitionCount = fractureWorld->actorTransitionCount;
 	snapshot.appliedForceLoadRowCount = fractureWorld->appliedForceLoadRowCount;

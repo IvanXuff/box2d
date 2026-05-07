@@ -321,6 +321,10 @@ typedef struct b2BlastFractureDebugSnapshot
 	uint32_t brokenBondCount;
 	uint32_t commandCount;
 	uint32_t constraintRowCount;
+	uint32_t contactPairRowCount;
+	uint32_t contactImpactBudgetRowCount;
+	uint32_t contactLoadBudgetRowCount;
+	uint32_t contactYieldQueryCount;
 	uint32_t jointConstraintRowCount;
 	uint32_t actorTransitionCount;
 	uint32_t appliedForceLoadRowCount;
